@@ -25,7 +25,6 @@ set -euo pipefail
 CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
 LOG_DIR="/var/log/vsphere-2-harvester"
 LOG_FILE="$LOG_DIR/general.log"
-SPINNER_DELAY=0.1
 
 # Ensure the log directory exists
 mkdir -p "$LOG_DIR"
