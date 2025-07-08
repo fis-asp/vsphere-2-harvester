@@ -253,14 +253,19 @@ monitor_import_status() {
   spinner() {
     local pid=$1
     local spinstr='🌍 🌎 🌏 🌍 🌎 🌏'
+    local spin_index=0
+    local spin_length=${#spinstr}
     while kill -0 "$pid" 2>/dev/null; do
-      for i in $spinstr; do
-        printf " [%s]  " "$i"
-        sleep "$SPINNER_DELAY"
-        printf "\b\b\b\b\b\b"
-      done
+      # Move the cursor to the bottom of the terminal
+      tput sc  # Save cursor position
+      tput cup "$(tput lines)" 0  # Move to the last line
+      printf " [%s]  " "${spinstr:spin_index:1}"
+      spin_index=$(( (spin_index + 1) % spin_length ))
+      sleep "$SPINNER_DELAY"
+      tput rc  # Restore cursor position
     done
-    printf "    \b\b\b\b"
+    tput rc  # Restore cursor position
+    printf "    \b\b\b\b"  # Clear spinner
   }
 
   # Start monitoring the import status
