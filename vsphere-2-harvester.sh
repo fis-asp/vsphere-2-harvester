@@ -228,25 +228,28 @@ fi
 
 # --- 9. Monitor Import Status ------------------------------------------------
 
-log "INFO" "Monitoring import status..."
+log "INFO" "Checking VirtualMachineImport status..."
 for i in {1..40}; do
-  STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
-  if [[ "$STATUS" == "virtualMachineRunning" ]]; then
+  IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
+  
+  if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
     log "INFO" "Import successful! VM is running."
     break
-  fi
-  if [[ "$STATUS" == "notfound" ]]; then
-    log "INFO" "VirtualMachineImport not found yet, waiting..."
+  elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
+    log "WARNING" "VirtualMachineImport not found yet, waiting..."
   else
-    log "INFO" "Current status: $STATUS, waiting..."
+    log "INFO" "Current import status: $IMPORT_STATUS, waiting..."
   fi
+  
   sleep 10
 done
 
-if [[ "$STATUS" != "virtualMachineRunning" ]]; then
-  log "WARNING" "Import did not complete successfully. Please check the Harvester UI and logs."
+if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
+  log "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
+  log "INFO" "Full resource details:"
+  kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+  exit 1
 fi
-
 # --- 10. Post-Import Hints ---------------------------------------------------
 
 log "INFO" "Post-import steps:"
