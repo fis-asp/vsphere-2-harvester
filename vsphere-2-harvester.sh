@@ -175,24 +175,29 @@ fi
 
 # --- 7. Wait for VmwareSource to be Ready ------------------------------------
 
-log "INFO" "Waiting for VmwareSource to be clusterReady..."
+log "INFO" "Checking VmwareSource status..."
 for i in {1..20}; do
-  STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
+  STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
+  
   if [[ "$STATUS" == "clusterReady" ]]; then
     log "INFO" "VmwareSource is ready."
     break
-  fi
-  if [[ "$STATUS" == "notfound" ]]; then
-    log "INFO" "VmwareSource not found yet, waiting..."
+  elif [[ "$STATUS" == "notfound" ]]; then
+    log "WARNING" "VmwareSource not found yet, waiting..."
   else
     log "INFO" "Current status: $STATUS, waiting..."
   fi
+  
   sleep 5
 done
 
 if [[ "$STATUS" != "clusterReady" ]]; then
-  error_exit "VmwareSource did not become ready. Check your configuration."
+  log "ERROR" "VmwareSource did not become ready. Check your configuration."
+  log "INFO" "Full resource details:"
+  kubectl get vmwaresource.migration vcsim -n default -o yaml
+  exit 1
 fi
+
 
 # --- 8. Create VirtualMachineImport Resource ---------------------------------
 
