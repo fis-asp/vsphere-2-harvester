@@ -230,14 +230,18 @@ fi
 
 log "INFO" "Starting migration process for VM: $VM_NAME"
 
-# Get the vm-import-controller pod name
-VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -l app=vm-import-controller -o jsonpath='{.items[0].metadata.name}')
+log "INFO" "Identifying vm-import-controller pod..."
+
+# Get the vm-import-controller pod name using a wildcard
+VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
 
 if [[ -n "$VM_IMPORT_CONTROLLER_POD" ]]; then
   log "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
-  
-  # Stream logs and filter for the current VirtualMachineImport resource
-  kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | grep "$VM_NAME" &
+  kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD"
+else
+  log "ERROR" "vm-import-controller pod not found. Check your Harvester installation."
+  exit 1
+fi
   
   # Monitor the import status
   for i in {1..40}; do
