@@ -34,12 +34,13 @@ mkdir -p "$LOG_DIR"
 
 # Function to log messages with timestamps and log levels
 log() {
-  local level="$1"
-  local message="$2"
-  local log_file="${3:-$LOG_FILE}"
+  local label="$1"
+  local level="$2"
+  local message="$3"
+  local log_file="${4:-$LOG_FILE}"
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "$timestamp [$level] $message" | tee -a "$log_file"
+  echo "[$label] $timestamp $level: $message" | tee -a "$log_file"
 }
 
 # Function to set up log rotation using logrotate
@@ -224,23 +225,23 @@ EOF
 }
 
 monitor_import_status() {
-  log "[SCRIPT]" "Starting migration process for VM: $VM_NAME"
+  log "SCRIPT" "INFO" "Starting migration process for VM: $VM_NAME"
 
   # Identify the vm-import-controller pod
   VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
 
   if [[ -z "$VM_IMPORT_CONTROLLER_POD" ]]; then
-    log "[SCRIPT]" "ERROR: vm-import-controller pod not found. Check your Harvester installation."
+    log "SCRIPT" "ERROR" "vm-import-controller pod not found. Check your Harvester installation."
     exit 1
   fi
 
-  log "[SCRIPT]" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
+  log "SCRIPT" "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
 
   # Function to stream logs with reconnection
   stream_logs() {
     while true; do
-      kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | sed "s/^/[IMPORT-CONTROLLER] /"
-      log "[SCRIPT]" "WARNING: Log stream disconnected. Retrying in 5 seconds..."
+      kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | sed "s/^/[IMPORT-CONTROLLER] $(date '+%Y-%m-%d %H:%M:%S') INFO: /"
+      log "SCRIPT" "WARNING" "Log stream disconnected. Retrying in 5 seconds..."
       sleep 5
     done
   }
@@ -251,24 +252,24 @@ monitor_import_status() {
 
   # Start monitoring the import status
   (
-    for i in {1..120}; do  # Increased timeout to 120 iterations (20 minutes total)
+    for i in {1..60}; do  # Increased timeout to 60 iterations (10 minutes total)
       IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
       
       if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
-        log "[SCRIPT]" "INFO: Import successful! VM is running."
+        log "SCRIPT" "INFO" "Import successful! VM is running."
         break
       elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
-        log "[SCRIPT]" "WARNING: VirtualMachineImport not found yet, waiting..."
+        log "SCRIPT" "WARNING" "VirtualMachineImport not found yet, waiting..."
       else
-        log "[SCRIPT]" "INFO: Current import status: $IMPORT_STATUS, waiting..."
+        log "SCRIPT" "INFO" "Current import status: $IMPORT_STATUS, waiting..."
       fi
       
       sleep 10
     done
 
     if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
-      log "[SCRIPT]" "ERROR: Import did not complete successfully. Check the Harvester UI and logs."
-      log "[SCRIPT]" "INFO: Full resource details:"
+      log "SCRIPT" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
+      log "SCRIPT" "INFO" "Full resource details:"
       kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
       exit 1
     fi
@@ -281,7 +282,7 @@ monitor_import_status() {
   # Kill the log streaming process
   kill $LOG_STREAM_PID 2>/dev/null
 
-  log "[SCRIPT]" "INFO: Migration process completed for VM: $VM_NAME"
+  log "SCRIPT" "INFO" "Migration process completed for VM: $VM_NAME"
 }
 
 # --- 7. Main Script ----------------------------------------------------------
