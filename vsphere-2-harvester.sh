@@ -249,25 +249,6 @@ monitor_import_status() {
   stream_logs &
   LOG_STREAM_PID=$!
 
-  # Function to display a spinner
-  spinner() {
-    local pid=$1
-    local spinstr='🌍 🌎 🌏 🌍 🌎 🌏'
-    local spin_index=0
-    local spin_length=${#spinstr}
-    while kill -0 "$pid" 2>/dev/null; do
-      # Move the cursor to the bottom of the terminal
-      tput sc  # Save cursor position
-      tput cup "$(tput lines)" 0  # Move to the last line
-      printf " [%s]  " "${spinstr:spin_index:1}"
-      spin_index=$(( (spin_index + 1) % spin_length ))
-      sleep "$SPINNER_DELAY"
-      tput rc  # Restore cursor position
-    done
-    tput rc  # Restore cursor position
-    printf "    \b\b\b\b"  # Clear spinner
-  }
-
   # Start monitoring the import status
   (
     for i in {1..40}; do
@@ -293,9 +274,6 @@ monitor_import_status() {
     fi
   ) &
   MONITOR_PID=$!
-
-  # Show the spinner while the monitoring process is running
-  spinner $MONITOR_PID
 
   # Wait for the monitoring process to finish
   wait $MONITOR_PID
