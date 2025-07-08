@@ -228,28 +228,46 @@ fi
 
 # --- 9. Monitor Import Status ------------------------------------------------
 
-log "INFO" "Checking VirtualMachineImport status..."
-for i in {1..40}; do
-  IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
-  
-  if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
-    log "INFO" "Import successful! VM is running."
-    break
-  elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
-    log "WARNING" "VirtualMachineImport not found yet, waiting..."
-  else
-    log "INFO" "Current import status: $IMPORT_STATUS, waiting..."
-  fi
-  
-  sleep 10
-done
+log "INFO" "Starting migration process for VM: $VM_NAME"
 
-if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
-  log "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
-  log "INFO" "Full resource details:"
-  kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+# Get the vm-import-controller pod name
+VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -l app=vm-import-controller -o jsonpath='{.items[0].metadata.name}')
+
+if [[ -n "$VM_IMPORT_CONTROLLER_POD" ]]; then
+  log "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
+  
+  # Stream logs and filter for the current VirtualMachineImport resource
+  kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | grep "$VM_NAME" &
+  
+  # Monitor the import status
+  for i in {1..40}; do
+    IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
+    
+    if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
+      log "INFO" "Import successful! VM is running."
+      break
+    elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
+      log "WARNING" "VirtualMachineImport not found yet, waiting..."
+    else
+      log "INFO" "Current import status: $IMPORT_STATUS, waiting..."
+    fi
+    
+    sleep 10
+  done
+  
+  if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
+    log "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
+    log "INFO" "Full resource details:"
+    kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+    exit 1
+  fi
+else
+  log "ERROR" "vm-import-controller pod not found. Check your Harvester installation."
   exit 1
 fi
+
+log "INFO" "Migration process completed for VM: $VM_NAME"
+
 # --- 10. Post-Import Hints ---------------------------------------------------
 
 log "INFO" "Post-import steps:"
