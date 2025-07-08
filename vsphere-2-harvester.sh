@@ -34,12 +34,11 @@ mkdir -p "$LOG_DIR"
 # Function to log messages with timestamps and log levels
 log() {
   local label="$1"
-  local level="$2"
-  local message="$3"
-  local log_file="${4:-$LOG_FILE}"
+  local message="$2"
+  local log_file="${3:-$LOG_FILE}"  # Default to $LOG_FILE if $3 is not provided
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[$label] $timestamp $level: $message" | tee -a "$log_file"
+  echo "[$label] $timestamp INFO: $message" | tee -a "$log_file"
 }
 
 # Function to set up log rotation using logrotate
