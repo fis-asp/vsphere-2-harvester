@@ -1,76 +1,120 @@
 #!/bin/bash
 
 ###############################################################################
-# migrate-vm.sh
+# vsphere-2-harvester.sh
 #
 # Automate and guide the migration of VMware vSphere VMs to Harvester
 # using the vm-import-controller.
 #
 # Usage:
-#   export VSPHERE_USER="administrator@vsphere.local"
-#   export VSPHERE_PASS="your-password"
-#   export VSPHERE_ENDPOINT="https://aspvcenter80.fis-gmbh.de/sdk"
-#   export VSPHERE_DC="ASP"
-#   export VM_NAME="your-vm-name"
-#   export VM_FOLDER="your-folder"           # Optional
-#   export SRC_NET="RHV-Testing"
-#   export DST_NET="default/rhv-testing"
-#   ./migrate-vm.sh
+#   ./vsphere-2-harvester.sh
 #
 # Prerequisites:
 #   - kubectl configured for your Harvester cluster
 #   - vm-import-controller Addon enabled in Harvester UI
 #   - Harvester >= v1.1.0
+#
+# Author:
+# Paul Dresch @ FIS-ASP
 ###############################################################################
 
-set -e
+set -euo pipefail
 
-# --- 1. Prerequisite Checks --------------------------------------------------
+# --- 1. Helper Functions -----------------------------------------------------
+
+# Function to prompt for input if a variable is not set
+prompt_for_variable() {
+  local var_name="$1"
+  local prompt_message="$2"
+  local default_value="${3:-}"
+
+  if [[ -z "${!var_name:-}" ]]; then
+    if [[ -n "$default_value" ]]; then
+      read -rp "$prompt_message [$default_value]: " input
+      export "$var_name"="${input:-$default_value}"
+    else
+      read -rp "$prompt_message: " input
+      export "$var_name"="$input"
+    fi
+  fi
+}
+
+# Function to check if a command exists
+command_exists() {
+  command -v "$1" &>/dev/null
+}
+
+# Function to print error messages and exit
+error_exit() {
+  echo "ERROR: $1" >&2
+  exit 1
+}
+
+# Function to check if a Kubernetes resource exists
+resource_exists() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local namespace="$3"
+
+  kubectl get "$resource_type" "$resource_name" -n "$namespace" &>/dev/null
+}
+
+# --- 2. Prerequisite Checks --------------------------------------------------
 
 echo "==> Checking prerequisites..."
 
-if ! command -v kubectl &>/dev/null; then
-  echo "ERROR: kubectl not found. Please install and configure it."
-  exit 1
+# Check if kubectl is installed
+if ! command_exists kubectl; then
+  error_exit "kubectl not found. Please install and configure it."
 fi
 
-# Check for required environment variables
-REQUIRED_VARS=(VSPHERE_USER VSPHERE_PASS VSPHERE_ENDPOINT VSPHERE_DC VM_NAME SRC_NET DST_NET)
-for var in "${REQUIRED_VARS[@]}"; do
-  if [[ -z "${!var}" ]]; then
-    echo "ERROR: Environment variable $var is not set."
-    exit 1
-  fi
-done
+# Prompt for required environment variables
+prompt_for_variable "VSPHERE_USER" "Enter vSphere username"
+prompt_for_variable "VSPHERE_PASS" "Enter vSphere password"
+prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)"
+prompt_for_variable "VSPHERE_DC" "Enter vSphere datacenter name"
+prompt_for_variable "VM_NAME" "Enter VM name"
+prompt_for_variable "SRC_NET" "Enter source network name"
+prompt_for_variable "DST_NET" "Enter destination network name"
+prompt_for_variable "VM_FOLDER" "Enter VM folder (optional)" ""
 
-echo "==> Please ensure:"
-echo "    - Harvester Hypervisor Tools/Drivers are installed in the VM."
-echo "    - The vm-import-controller Addon is enabled in the Harvester UI."
-echo "    - The VM name is RFC1123 compliant (lowercase, no special chars, max 63 chars)."
-echo "    - For Windows VMs: Set disk controller to SATA in vCenter before export."
-echo "    - For Windows VMs: Install VirtIO drivers after import for best performance."
+# Display a summary of the inputs
+echo
+echo "==> Configuration Summary:"
+echo "    vSphere User: $VSPHERE_USER"
+echo "    vSphere Endpoint: $VSPHERE_ENDPOINT"
+echo "    Datacenter: $VSPHERE_DC"
+echo "    VM Name: $VM_NAME"
+echo "    Source Network: $SRC_NET"
+echo "    Destination Network: $DST_NET"
+[[ -n "$VM_FOLDER" ]] && echo "    VM Folder: $VM_FOLDER"
 echo
 
-# --- 2. VM Name Compliance Check ---------------------------------------------
+# --- 3. VM Name Compliance Check ---------------------------------------------
 
 if [[ ! "$VM_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
   echo "WARNING: VM name '$VM_NAME' is not RFC1123 compliant!"
   echo "         Please rename the VM in vCenter if necessary."
 fi
 
-# --- 3. Create vSphere Credentials Secret ------------------------------------
+# --- 4. Create vSphere Credentials Secret ------------------------------------
 
-echo "==> Creating vSphere credentials secret in Kubernetes..."
-kubectl delete secret vsphere-credentials -n default --ignore-not-found
-kubectl create secret generic vsphere-credentials \
-  --from-literal=username="$VSPHERE_USER" \
-  --from-literal=password="$VSPHERE_PASS" \
-  -n default
+echo "==> Ensuring vSphere credentials secret exists in Kubernetes..."
+if ! resource_exists "secret" "vsphere-credentials" "default"; then
+  kubectl create secret generic vsphere-credentials \
+    --from-literal=username="$VSPHERE_USER" \
+    --from-literal=password="$VSPHERE_PASS" \
+    -n default
+  echo "    Secret 'vsphere-credentials' created."
+else
+  echo "    Secret 'vsphere-credentials' already exists. Skipping creation."
+fi
 
-# --- 4. Create VmwareSource Resource -----------------------------------------
+# --- 5. Create VmwareSource Resource -----------------------------------------
 
-echo "==> Creating VmwareSource resource..."
-cat <<EOF | kubectl apply -f -
+echo "==> Ensuring VmwareSource resource exists..."
+if ! resource_exists "vmwaresource.migration" "vcsim" "default"; then
+  cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VmwareSource
 metadata:
@@ -83,8 +127,12 @@ spec:
     name: vsphere-credentials
     namespace: default
 EOF
+  echo "    VmwareSource 'vcsim' created."
+else
+  echo "    VmwareSource 'vcsim' already exists. Skipping creation."
+fi
 
-# --- 5. Wait for VmwareSource to be Ready ------------------------------------
+# --- 6. Wait for VmwareSource to be Ready ------------------------------------
 
 echo "==> Waiting for VmwareSource to be clusterReady..."
 for i in {1..20}; do
@@ -102,14 +150,14 @@ for i in {1..20}; do
 done
 
 if [[ "$STATUS" != "clusterReady" ]]; then
-  echo "ERROR: VmwareSource did not become ready. Check your configuration."
-  exit 1
+  error_exit "VmwareSource did not become ready. Check your configuration."
 fi
 
-# --- 6. Create VirtualMachineImport Resource ---------------------------------
+# --- 7. Create VirtualMachineImport Resource ---------------------------------
 
-echo "==> Creating VirtualMachineImport resource..."
-cat <<EOF | kubectl apply -f -
+echo "==> Ensuring VirtualMachineImport resource exists..."
+if ! resource_exists "virtualmachineimport.migration" "$VM_NAME" "default"; then
+  cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VirtualMachineImport
 metadata:
@@ -127,12 +175,16 @@ spec:
     kind: VmwareSource
     apiVersion: migration.harvesterhci.io/v1beta1
 EOF
+  echo "    VirtualMachineImport '$VM_NAME' created."
+else
+  echo "    VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
+fi
 
-# --- 7. Monitor Import Status ------------------------------------------------
+# --- 8. Monitor Import Status ------------------------------------------------
 
 echo "==> Monitoring import status..."
 for i in {1..40}; do
-  STATUS=$(kubectl get virtualmachineimport.migration $VM_NAME -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
+  STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
   if [[ "$STATUS" == "virtualMachineRunning" ]]; then
     echo "    Import successful! VM is running."
     break
@@ -149,7 +201,7 @@ if [[ "$STATUS" != "virtualMachineRunning" ]]; then
   echo "WARNING: Import did not complete successfully. Please check the Harvester UI and logs."
 fi
 
-# --- 8. Post-Import Hints ----------------------------------------------------
+# --- 9. Post-Import Hints ----------------------------------------------------
 
 echo
 echo "==> Post-import steps:"
