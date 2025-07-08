@@ -20,7 +20,18 @@
 
 set -euo pipefail
 
-# --- 1. Helper Functions -----------------------------------------------------
+# --- 1. Constants and Config -------------------------------------------------
+
+CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
+
+# --- 2. Helper Functions -----------------------------------------------------
+
+# Function to log messages with timestamps and log levels
+log() {
+  local level="$1"
+  local message="$2"
+  echo "$(date '+%Y-%m-%d %H:%M:%S') [$level] $message"
+}
 
 # Function to prompt for input if a variable is not set
 prompt_for_variable() {
@@ -46,7 +57,7 @@ command_exists() {
 
 # Function to print error messages and exit
 error_exit() {
-  echo "ERROR: $1" >&2
+  log "ERROR" "$1"
   exit 1
 }
 
@@ -59,60 +70,90 @@ resource_exists() {
   kubectl get "$resource_type" "$resource_name" -n "$namespace" &>/dev/null
 }
 
-# --- 2. Prerequisite Checks --------------------------------------------------
+# Function to save configuration to a file
+save_config() {
+  log "INFO" "Saving configuration to $CONFIG_FILE..."
+  cat <<EOF >"$CONFIG_FILE"
+VSPHERE_USER="$VSPHERE_USER"
+VSPHERE_PASS="$VSPHERE_PASS"
+VSPHERE_ENDPOINT="$VSPHERE_ENDPOINT"
+VSPHERE_DC="$VSPHERE_DC"
+SRC_NET="$SRC_NET"
+DST_NET="$DST_NET"
+EOF
+  log "INFO" "Configuration saved successfully."
+}
 
-echo "==> Checking prerequisites..."
+# Function to load configuration from a file
+load_config() {
+  if [[ -f "$CONFIG_FILE" ]]; then
+    log "INFO" "Loading configuration from $CONFIG_FILE..."
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+    log "INFO" "Configuration loaded successfully."
+  else
+    log "WARNING" "Configuration file not found. Proceeding with fresh inputs."
+  fi
+}
+
+# --- 3. Prerequisite Checks --------------------------------------------------
+
+log "INFO" "Checking prerequisites..."
 
 # Check if kubectl is installed
 if ! command_exists kubectl; then
   error_exit "kubectl not found. Please install and configure it."
 fi
 
+# Load saved configuration if available
+load_config
+
 # Prompt for required environment variables
-prompt_for_variable "VSPHERE_USER" "Enter vSphere username"
-prompt_for_variable "VSPHERE_PASS" "Enter vSphere password"
-prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)"
-prompt_for_variable "VSPHERE_DC" "Enter vSphere datacenter name"
+prompt_for_variable "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}"
+prompt_for_variable "VSPHERE_PASS" "Enter vSphere password" "${VSPHERE_PASS:-}"
+prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)" "${VSPHERE_ENDPOINT:-}"
+prompt_for_variable "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-}"
+prompt_for_variable "SRC_NET" "Enter source network name" "${SRC_NET:-}"
+prompt_for_variable "DST_NET" "Enter destination network name" "${DST_NET:-}"
 prompt_for_variable "VM_NAME" "Enter VM name"
-prompt_for_variable "SRC_NET" "Enter source network name"
-prompt_for_variable "DST_NET" "Enter destination network name"
 prompt_for_variable "VM_FOLDER" "Enter VM folder (optional)" ""
 
-# Display a summary of the inputs
-echo
-echo "==> Configuration Summary:"
-echo "    vSphere User: $VSPHERE_USER"
-echo "    vSphere Endpoint: $VSPHERE_ENDPOINT"
-echo "    Datacenter: $VSPHERE_DC"
-echo "    VM Name: $VM_NAME"
-echo "    Source Network: $SRC_NET"
-echo "    Destination Network: $DST_NET"
-[[ -n "$VM_FOLDER" ]] && echo "    VM Folder: $VM_FOLDER"
-echo
+# Save configuration for future use
+save_config
 
-# --- 3. VM Name Compliance Check ---------------------------------------------
+# Display a summary of the inputs
+log "INFO" "Configuration Summary:"
+log "INFO" "  vSphere User: $VSPHERE_USER"
+log "INFO" "  vSphere Endpoint: $VSPHERE_ENDPOINT"
+log "INFO" "  Datacenter: $VSPHERE_DC"
+log "INFO" "  VM Name: $VM_NAME"
+log "INFO" "  Source Network: $SRC_NET"
+log "INFO" "  Destination Network: $DST_NET"
+[[ -n "$VM_FOLDER" ]] && log "INFO" "  VM Folder: $VM_FOLDER"
+
+# --- 4. VM Name Compliance Check ---------------------------------------------
 
 if [[ ! "$VM_NAME" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
-  echo "WARNING: VM name '$VM_NAME' is not RFC1123 compliant!"
-  echo "         Please rename the VM in vCenter if necessary."
+  log "WARNING" "VM name '$VM_NAME' is not RFC1123 compliant!"
+  log "WARNING" "Please rename the VM in vCenter if necessary."
 fi
 
-# --- 4. Create vSphere Credentials Secret ------------------------------------
+# --- 5. Create vSphere Credentials Secret ------------------------------------
 
-echo "==> Ensuring vSphere credentials secret exists in Kubernetes..."
+log "INFO" "Ensuring vSphere credentials secret exists in Kubernetes..."
 if ! resource_exists "secret" "vsphere-credentials" "default"; then
   kubectl create secret generic vsphere-credentials \
     --from-literal=username="$VSPHERE_USER" \
     --from-literal=password="$VSPHERE_PASS" \
     -n default
-  echo "    Secret 'vsphere-credentials' created."
+  log "INFO" "Secret 'vsphere-credentials' created."
 else
-  echo "    Secret 'vsphere-credentials' already exists. Skipping creation."
+  log "INFO" "Secret 'vsphere-credentials' already exists. Skipping creation."
 fi
 
-# --- 5. Create VmwareSource Resource -----------------------------------------
+# --- 6. Create VmwareSource Resource -----------------------------------------
 
-echo "==> Ensuring VmwareSource resource exists..."
+log "INFO" "Ensuring VmwareSource resource exists..."
 if ! resource_exists "vmwaresource.migration" "vcsim" "default"; then
   cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
@@ -127,24 +168,24 @@ spec:
     name: vsphere-credentials
     namespace: default
 EOF
-  echo "    VmwareSource 'vcsim' created."
+  log "INFO" "VmwareSource 'vcsim' created."
 else
-  echo "    VmwareSource 'vcsim' already exists. Skipping creation."
+  log "INFO" "VmwareSource 'vcsim' already exists. Skipping creation."
 fi
 
-# --- 6. Wait for VmwareSource to be Ready ------------------------------------
+# --- 7. Wait for VmwareSource to be Ready ------------------------------------
 
-echo "==> Waiting for VmwareSource to be clusterReady..."
+log "INFO" "Waiting for VmwareSource to be clusterReady..."
 for i in {1..20}; do
   STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
   if [[ "$STATUS" == "clusterReady" ]]; then
-    echo "    VmwareSource is ready."
+    log "INFO" "VmwareSource is ready."
     break
   fi
   if [[ "$STATUS" == "notfound" ]]; then
-    echo "    VmwareSource not found yet, waiting..."
+    log "INFO" "VmwareSource not found yet, waiting..."
   else
-    echo "    Current status: $STATUS, waiting..."
+    log "INFO" "Current status: $STATUS, waiting..."
   fi
   sleep 5
 done
@@ -153,9 +194,9 @@ if [[ "$STATUS" != "clusterReady" ]]; then
   error_exit "VmwareSource did not become ready. Check your configuration."
 fi
 
-# --- 7. Create VirtualMachineImport Resource ---------------------------------
+# --- 8. Create VirtualMachineImport Resource ---------------------------------
 
-echo "==> Ensuring VirtualMachineImport resource exists..."
+log "INFO" "Ensuring VirtualMachineImport resource exists..."
 if ! resource_exists "virtualmachineimport.migration" "$VM_NAME" "default"; then
   cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
@@ -175,39 +216,37 @@ spec:
     kind: VmwareSource
     apiVersion: migration.harvesterhci.io/v1beta1
 EOF
-  echo "    VirtualMachineImport '$VM_NAME' created."
+  log "INFO" "VirtualMachineImport '$VM_NAME' created."
 else
-  echo "    VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
+  log "INFO" "VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
 fi
 
-# --- 8. Monitor Import Status ------------------------------------------------
+# --- 9. Monitor Import Status ------------------------------------------------
 
-echo "==> Monitoring import status..."
+log "INFO" "Monitoring import status..."
 for i in {1..40}; do
   STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.phase}' 2>/dev/null || echo "notfound")
   if [[ "$STATUS" == "virtualMachineRunning" ]]; then
-    echo "    Import successful! VM is running."
+    log "INFO" "Import successful! VM is running."
     break
   fi
   if [[ "$STATUS" == "notfound" ]]; then
-    echo "    VirtualMachineImport not found yet, waiting..."
+    log "INFO" "VirtualMachineImport not found yet, waiting..."
   else
-    echo "    Current status: $STATUS, waiting..."
+    log "INFO" "Current status: $STATUS, waiting..."
   fi
   sleep 10
 done
 
 if [[ "$STATUS" != "virtualMachineRunning" ]]; then
-  echo "WARNING: Import did not complete successfully. Please check the Harvester UI and logs."
+  log "WARNING" "Import did not complete successfully. Please check the Harvester UI and logs."
 fi
 
-# --- 9. Post-Import Hints ----------------------------------------------------
+# --- 10. Post-Import Hints ---------------------------------------------------
 
-echo
-echo "==> Post-import steps:"
-echo "    - For Windows VMs: If the VM does not boot or disks are not detected,"
-echo "      stop the VM, edit the disk bus in the YAML from 'virtio' to 'sata', and restart."
-echo "    - Install VirtIO drivers in Windows for network and performance optimization."
-echo "    - After successful boot and driver installation, you can switch the disk bus back to 'virtio'."
-echo
-echo "==> Migration script completed."
+log "INFO" "Post-import steps:"
+log "INFO" "  - For Windows VMs: If the VM does not boot or disks are not detected,"
+log "INFO" "    stop the VM, edit the disk bus in the YAML from 'virtio' to 'sata', and restart."
+log "INFO" "  - Install VirtIO drivers in Windows for network and performance optimization."
+log "INFO" "  - After successful boot and driver installation, you can switch the disk bus back to 'virtio'."
+log "INFO" "Migration script completed."
