@@ -4,7 +4,8 @@
 # vsphere-2-harvester.sh
 #
 # Automates the migration of VMware vSphere VMs to Harvester using the
-# vm-import-controller.
+# vm-import-controller. This script is designed for enterprise environments
+# with robust logging, modularized functions, and user-friendly features.
 #
 # Usage:
 #   ./vsphere-2-harvester.sh
@@ -24,7 +25,7 @@ set -euo pipefail
 
 CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
 LOG_DIR="/var/log/vsphere-2-harvester"
-LOG_FILE="$LOG_DIR/general.log"
+GENERAL_LOG_FILE="$LOG_DIR/general.log"
 
 # Ensure the log directory exists
 mkdir -p "$LOG_DIR"
@@ -34,11 +35,12 @@ mkdir -p "$LOG_DIR"
 # Function to log messages with timestamps and log levels
 log() {
   local label="$1"
-  local message="$2"
-  local log_file="${3:-$LOG_FILE}"  # Default to $LOG_FILE if $3 is not provided
+  local level="$2"
+  local message="$3"
+  local log_file="${4:-$GENERAL_LOG_FILE}"  # Default to general log file if not provided
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  echo "[$label] $timestamp INFO: $message" | tee -a "$log_file"
+  echo "[$label] $timestamp [$level]: $message" | tee -a "$log_file"
 }
 
 # Function to set up log rotation using logrotate
@@ -55,11 +57,11 @@ $LOG_DIR/*.log {
     create 0640 root root
 }
 EOF
-    log "INFO" "Log rotation configured for $LOG_DIR."
+    log "SCRIPT" "INFO" "Log rotation configured for $LOG_DIR."
   fi
 }
 
-# --- 4. Helper Functions -----------------------------------------------------
+# --- 3. Helper Functions -----------------------------------------------------
 
 # Function to prompt for input if a variable is not set
 prompt_for_variable() {
@@ -94,7 +96,7 @@ resource_exists() {
 
 # Function to save configuration to a file
 save_config() {
-  log "INFO" "Saving configuration to $CONFIG_FILE..."
+  log "SCRIPT" "INFO" "Saving configuration to $CONFIG_FILE..."
   cat <<EOF >"$CONFIG_FILE"
 VSPHERE_USER="$VSPHERE_USER"
 VSPHERE_PASS="$VSPHERE_PASS"
@@ -103,29 +105,29 @@ VSPHERE_DC="$VSPHERE_DC"
 SRC_NET="$SRC_NET"
 DST_NET="$DST_NET"
 EOF
-  log "INFO" "Configuration saved successfully."
+  log "SCRIPT" "INFO" "Configuration saved successfully."
 }
 
 # Function to load configuration from a file
 load_config() {
   if [[ -f "$CONFIG_FILE" ]]; then
-    log "INFO" "Loading configuration from $CONFIG_FILE..."
+    log "SCRIPT" "INFO" "Loading configuration from $CONFIG_FILE..."
     # shellcheck source=/dev/null
     source "$CONFIG_FILE"
-    log "INFO" "Configuration loaded successfully."
+    log "SCRIPT" "INFO" "Configuration loaded successfully."
   else
-    log "WARNING" "Configuration file not found. Proceeding with fresh inputs."
+    log "SCRIPT" "WARNING" "Configuration file not found. Proceeding with fresh inputs."
   fi
 }
 
-# --- 5. Prerequisite Checks --------------------------------------------------
+# --- 4. Prerequisite Checks --------------------------------------------------
 
 check_prerequisites() {
-  log "INFO" "Checking prerequisites..."
+  log "SCRIPT" "INFO" "Checking prerequisites..."
 
   # Check if kubectl is installed
   if ! command_exists kubectl; then
-    log "ERROR" "kubectl not found. Please install and configure it."
+    log "SCRIPT" "ERROR" "kubectl not found. Please install and configure it."
     exit 1
   fi
 
@@ -133,23 +135,23 @@ check_prerequisites() {
   setup_log_rotation
 }
 
-# --- 6. Kubernetes Resource Management ---------------------------------------
+# --- 5. Kubernetes Resource Management ---------------------------------------
 
 create_vsphere_secret() {
-  log "INFO" "Ensuring vSphere credentials secret exists in Kubernetes..."
+  log "SCRIPT" "INFO" "Ensuring vSphere credentials secret exists in Kubernetes..."
   if ! resource_exists "secret" "vsphere-credentials" "default"; then
     kubectl create secret generic vsphere-credentials \
       --from-literal=username="$VSPHERE_USER" \
       --from-literal=password="$VSPHERE_PASS" \
       -n default
-    log "INFO" "Secret 'vsphere-credentials' created."
+    log "SCRIPT" "INFO" "Secret 'vsphere-credentials' created."
   else
-    log "INFO" "Secret 'vsphere-credentials' already exists. Skipping creation."
+    log "SCRIPT" "INFO" "Secret 'vsphere-credentials' already exists. Skipping creation."
   fi
 }
 
 create_vmware_source() {
-  log "INFO" "Ensuring VmwareSource resource exists..."
+  log "SCRIPT" "INFO" "Ensuring VmwareSource resource exists..."
   if ! resource_exists "vmwaresource.migration" "vcsim" "default"; then
     cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
@@ -164,39 +166,39 @@ spec:
     name: vsphere-credentials
     namespace: default
 EOF
-    log "INFO" "VmwareSource 'vcsim' created."
+    log "SCRIPT" "INFO" "VmwareSource 'vcsim' created."
   else
-    log "INFO" "VmwareSource 'vcsim' already exists. Skipping creation."
+    log "SCRIPT" "INFO" "VmwareSource 'vcsim' already exists. Skipping creation."
   fi
 }
 
 wait_for_vmware_source_ready() {
-  log "INFO" "Checking VmwareSource status..."
+  log "SCRIPT" "INFO" "Checking VmwareSource status..."
   for i in {1..20}; do
     STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
     
     if [[ "$STATUS" == "clusterReady" ]]; then
-      log "INFO" "VmwareSource is ready."
+      log "SCRIPT" "INFO" "VmwareSource is ready."
       break
     elif [[ "$STATUS" == "notfound" ]]; then
-      log "WARNING" "VmwareSource not found yet, waiting..."
+      log "SCRIPT" "WARNING" "VmwareSource not found yet, waiting..."
     else
-      log "INFO" "Current status: $STATUS, waiting..."
+      log "SCRIPT" "INFO" "Current status: $STATUS, waiting..."
     fi
     
     sleep 5
   done
 
   if [[ "$STATUS" != "clusterReady" ]]; then
-    log "ERROR" "VmwareSource did not become ready. Check your configuration."
-    log "INFO" "Full resource details:"
+    log "SCRIPT" "ERROR" "VmwareSource did not become ready. Check your configuration."
+    log "SCRIPT" "INFO" "Full resource details:"
     kubectl get vmwaresource.migration vcsim -n default -o yaml
     exit 1
   fi
 }
 
 create_virtual_machine_import() {
-  log "INFO" "Ensuring VirtualMachineImport resource exists..."
+  log "SCRIPT" "INFO" "Ensuring VirtualMachineImport resource exists..."
   if ! resource_exists "virtualmachineimport.migration" "$VM_NAME" "default"; then
     cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
@@ -216,30 +218,33 @@ spec:
     kind: VmwareSource
     apiVersion: migration.harvesterhci.io/v1beta1
 EOF
-    log "INFO" "VirtualMachineImport '$VM_NAME' created."
+    log "SCRIPT" "INFO" "VirtualMachineImport '$VM_NAME' created."
   else
-    log "INFO" "VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
+    log "SCRIPT" "INFO" "VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
   fi
 }
 
 monitor_import_status() {
-  log "SCRIPT" "INFO" "Starting migration process for VM: $VM_NAME"
+  local vm_log_file="$LOG_DIR/${VM_NAME}.log"
+  log "SCRIPT" "INFO" "Starting migration process for VM: $VM_NAME" "$vm_log_file"
 
   # Identify the vm-import-controller pod
   VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
 
   if [[ -z "$VM_IMPORT_CONTROLLER_POD" ]]; then
-    log "SCRIPT" "ERROR" "vm-import-controller pod not found. Check your Harvester installation."
+    log "SCRIPT" "ERROR" "vm-import-controller pod not found. Check your Harvester installation." "$vm_log_file"
     exit 1
   fi
 
-  log "SCRIPT" "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
+  log "SCRIPT" "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD" "$vm_log_file"
 
   # Function to stream logs with reconnection
   stream_logs() {
     while true; do
-      kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | sed "s/^/[IMPORT-CONTROLLER] $(date '+%Y-%m-%d %H:%M:%S') INFO: /"
-      log "SCRIPT" "WARNING" "Log stream disconnected. Retrying in 5 seconds..."
+      kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | while IFS= read -r line; do
+        log "IMPORT-CONTROLLER" "INFO" "$line" "$vm_log_file"
+      done
+      log "SCRIPT" "WARNING" "Log stream disconnected. Retrying in 5 seconds..." "$vm_log_file"
       sleep 5
     done
   }
@@ -254,21 +259,21 @@ monitor_import_status() {
       IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
       
       if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
-        log "SCRIPT" "INFO" "Import successful! VM is running."
+        log "SCRIPT" "INFO" "Import successful! VM is running." "$vm_log_file"
         break
       elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
-        log "SCRIPT" "WARNING" "VirtualMachineImport not found yet, waiting..."
+        log "SCRIPT" "WARNING" "VirtualMachineImport not found yet, waiting..." "$vm_log_file"
       else
-        log "SCRIPT" "INFO" "Current import status: $IMPORT_STATUS, waiting..."
+        log "SCRIPT" "INFO" "Current import status: $IMPORT_STATUS, waiting..." "$vm_log_file"
       fi
       
       sleep 10
     done
 
     if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
-      log "SCRIPT" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
-      log "SCRIPT" "INFO" "Full resource details:"
-      kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+      log "SCRIPT" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs." "$vm_log_file"
+      log "SCRIPT" "INFO" "Full resource details:" "$vm_log_file"
+      kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml | tee -a "$vm_log_file"
       exit 1
     fi
   ) &
@@ -280,10 +285,10 @@ monitor_import_status() {
   # Kill the log streaming process
   kill $LOG_STREAM_PID 2>/dev/null
 
-  log "SCRIPT" "INFO" "Migration process completed for VM: $VM_NAME"
+  log "SCRIPT" "INFO" "Migration process completed for VM: $VM_NAME" "$vm_log_file"
 }
 
-# --- 7. Main Script ----------------------------------------------------------
+# --- 6. Main Script ----------------------------------------------------------
 
 main() {
   check_prerequisites
@@ -308,7 +313,7 @@ main() {
   create_virtual_machine_import
   monitor_import_status
 
-  log "INFO" "Migration process completed for VM: $VM_NAME"
+  log "SCRIPT" "INFO" "Migration process completed for VM: $VM_NAME"
 }
 
 main "$@"
