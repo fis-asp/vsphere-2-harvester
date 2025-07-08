@@ -60,22 +60,6 @@ EOF
   fi
 }
 
-# --- 3. Spinner Function -----------------------------------------------------
-
-# Fancy spinner for user feedback
-spinner() {
-  local pid=$1
-  local spinstr='🌍 🌎 🌏 🌍 🌎 🌏'
-  while kill -0 "$pid" 2>/dev/null; do
-    for i in $spinstr; do
-      printf " [%s]  " "$i"
-      sleep "$SPINNER_DELAY"
-      printf "\b\b\b\b\b\b"
-    done
-  done
-  printf "    \b\b\b\b"
-}
-
 # --- 4. Helper Functions -----------------------------------------------------
 
 # Function to prompt for input if a variable is not set
@@ -242,28 +226,79 @@ EOF
 monitor_import_status() {
   log "INFO" "Starting migration process for VM: $VM_NAME"
 
-  # Start monitoring the import status
-  for i in {1..40}; do
-    IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
-    
-    if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
-      log "INFO" "Import successful! VM is running."
-      break
-    elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
-      log "WARNING" "VirtualMachineImport not found yet, waiting..."
-    else
-      log "INFO" "Current import status: $IMPORT_STATUS, waiting..."
-    fi
-    
-    sleep 10
-  done
+  # Identify the vm-import-controller pod
+  VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
 
-  if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
-    log "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
-    log "INFO" "Full resource details:"
-    kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+  if [[ -z "$VM_IMPORT_CONTROLLER_POD" ]]; then
+    log "ERROR" "vm-import-controller pod not found. Check your Harvester installation."
     exit 1
   fi
+
+  log "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD"
+
+  # Function to stream logs with reconnection
+  stream_logs() {
+    while true; do
+      kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | sed "s/^/[IMPORT-CONTROLLER] /"
+      log "WARNING" "Log stream disconnected. Retrying in 5 seconds..."
+      sleep 5
+    done
+  }
+
+  # Start log streaming in the background
+  stream_logs &
+  LOG_STREAM_PID=$!
+
+  # Function to display a spinner
+  spinner() {
+    local pid=$1
+    local spinstr='🌍 🌎 🌏 🌍 🌎 🌏'
+    while kill -0 "$pid" 2>/dev/null; do
+      for i in $spinstr; do
+        printf " [%s]  " "$i"
+        sleep "$SPINNER_DELAY"
+        printf "\b\b\b\b\b\b"
+      done
+    done
+    printf "    \b\b\b\b"
+  }
+
+  # Start monitoring the import status
+  (
+    for i in {1..40}; do
+      IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
+      
+      if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
+        log "INFO" "Import successful! VM is running."
+        break
+      elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
+        log "WARNING" "VirtualMachineImport not found yet, waiting..."
+      else
+        log "INFO" "Current import status: $IMPORT_STATUS, waiting..."
+      fi
+      
+      sleep 10
+    done
+
+    if [[ "$IMPORT_STATUS" != "virtualMachineRunning" ]]; then
+      log "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
+      log "INFO" "Full resource details:"
+      kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml
+      exit 1
+    fi
+  ) &
+  MONITOR_PID=$!
+
+  # Show the spinner while the monitoring process is running
+  spinner $MONITOR_PID
+
+  # Wait for the monitoring process to finish
+  wait $MONITOR_PID
+
+  # Kill the log streaming process
+  kill $LOG_STREAM_PID 2>/dev/null
+
+  log "INFO" "Migration process completed for VM: $VM_NAME"
 }
 
 # --- 7. Main Script ----------------------------------------------------------
