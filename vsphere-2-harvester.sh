@@ -240,15 +240,48 @@ monitor_import_status() {
   log "$SCRIPT_NAME" "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD" "$vm_log_file"
 
   # Function to stream logs with reconnection
-  stream_logs() {
-    # Use stern to follow logs for the harvester-vm-import-controller pod
-    stern -n harvester-system '^harvester-vm-import-controller' | while IFS= read -r line; do
-      log "IMPORT-CONTROLLER" "INFO" "$line" "$vm_log_file"
+  stream_logs_smart_tail() {
+    local last_line_hash=""
+    local pod_name=""
+    while true; do
+      # Get the current pod name (in case of restarts)
+      pod_name=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
+      if [[ -z "$pod_name" ]]; then
+        log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming." "$vm_log_file"
+        sleep 5
+        continue
+      fi
+
+      # Fetch the last 100 lines of logs
+      mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --tail=100)
+
+      # Find the index of the last processed line
+      start_index=0
+      if [[ -n "$last_line_hash" ]]; then
+        for i in "${!lines[@]}"; do
+          if [[ "$(echo "${lines[$i]}" | sha256sum)" == "$last_line_hash" ]]; then
+            start_index=$((i + 1))
+            break
+          fi
+        done
+      fi
+
+      # Output new lines
+      for ((i = start_index; i < ${#lines[@]}; i++)); do
+        log "IMPORT-CONTROLLER" "INFO" "${lines[$i]}" "$vm_log_file"
+      done
+
+      # Remember the hash of the last line processed
+      if [[ ${#lines[@]} -gt 0 ]]; then
+        last_line_hash="$(echo "${lines[-1]}" | sha256sum)"
+      fi
+
+      sleep 5
     done
   }
 
   # Start log streaming in the background
-  stream_logs &
+  stream_logs_smart_tail &
   LOG_STREAM_PID=$!
 
   # Start monitoring the import status
