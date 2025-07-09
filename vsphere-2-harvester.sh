@@ -242,9 +242,18 @@ monitor_import_status() {
   # Function to stream logs with reconnection
   stream_logs() {
     while true; do
+      # Re-identify the pod each time before streaming logs
+      VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
+      if [[ -z "$VM_IMPORT_CONTROLLER_POD" ]]; then
+        log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming." "$vm_log_file"
+        sleep 5
+        continue
+      fi
+
       kubectl logs -f -n harvester-system "$VM_IMPORT_CONTROLLER_POD" | while IFS= read -r line; do
         log "IMPORT-CONTROLLER" "INFO" "$line" "$vm_log_file"
       done
+
       log "$SCRIPT_NAME" "WARNING" "Log stream disconnected. Retrying in 5 seconds..." "$vm_log_file"
       sleep 5
     done
