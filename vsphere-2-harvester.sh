@@ -4,11 +4,11 @@
 # vsphere-2-harvester.sh
 #
 # Automates the migration of VMware vSphere VMs to Harvester using the
-# vm-import-controller. This script is designed for enterprise environments
-# with robust logging, modularized functions, and user-friendly features.
+# vm-import-controller. Enterprise-ready: robust logging, config review,
+# password safety, and user-friendly features.
 #
 # Usage:
-#   ./vsphere-2-harvester.sh [--verbose|-v]
+#   ./vsphere-2-harvester.sh [--verbose|-v] [--help|-h]
 #
 # Prerequisites:
 #   - kubectl configured for your Harvester cluster
@@ -29,13 +29,43 @@ GENERAL_LOG_FILE="$LOG_DIR/general.log"
 SCRIPT_NAME="VSPHERE-2-HARVESTER"
 VERBOSE=0
 
-# --- 1.1. Argument Parsing ---------------------------------------------------
+# Enterprise defaults
+DEFAULT_VSPHERE_DC="ASP"
+DEFAULT_SRC_NET="RHV-Testing"
+DEFAULT_DST_NET="default/rhv-testing"
+
+# --- 1.1. Argument Parsing & Help --------------------------------------------
+
+show_help() {
+  cat <<EOF
+$SCRIPT_NAME
+
+Automates the migration of VMware vSphere VMs to Harvester using the
+vm-import-controller.
+
+Usage:
+  $0 [--verbose|-v] [--help|-h]
+
+Options:
+  -v, --verbose   Enable verbose (DEBUG) logging
+  -h, --help      Show this help message and exit
+
+Config file: $CONFIG_FILE
+Logs:        $GENERAL_LOG_FILE
+
+Author: Paul Dresch @ FIS-ASP
+EOF
+}
 
 for arg in "$@"; do
   case "$arg" in
     -v|--verbose)
       VERBOSE=1
       shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
       ;;
     *)
       ;;
@@ -47,34 +77,27 @@ mkdir -p "$LOG_DIR"
 
 # --- 2. Logging Functions ----------------------------------------------------
 
-# Function to log messages with timestamps and log levels
 log() {
   local label="$1"
   local level="$2"
   local message="$3"
-  local log_file="${4:-$GENERAL_LOG_FILE}"  # Default to general log file if not provided
+  local log_file="${4:-$GENERAL_LOG_FILE}"
   local timestamp
   timestamp=$(date '+%Y-%m-%d %H:%M:%S')
-  # Only print DEBUG if VERBOSE is enabled
   if [[ "$level" == "DEBUG" && "$VERBOSE" -ne 1 ]]; then
     return
   fi
   echo "[$label] $timestamp [$level]: $message" | tee -a "$log_file"
 }
 
-# Function to log all environment variables (masking passwords)
 log_environment() {
-  log "$SCRIPT_NAME" "DEBUG" "Logging environment variables (passwords masked)"
-  for var in VSPHERE_USER VSPHERE_PASS VSPHERE_ENDPOINT VSPHERE_DC SRC_NET DST_NET VM_NAME VM_FOLDER; do
-    if [[ "$var" == "VSPHERE_PASS" ]]; then
-      log "$SCRIPT_NAME" "DEBUG" "$var=********"
-    else
-      log "$SCRIPT_NAME" "DEBUG" "$var=${!var-}"
-    fi
+  log "$SCRIPT_NAME" "DEBUG" "Current configuration (passwords masked):"
+  for var in VSPHERE_USER VSPHERE_ENDPOINT VSPHERE_DC SRC_NET DST_NET VM_NAME VM_FOLDER; do
+    log "$SCRIPT_NAME" "DEBUG" "$var=${!var-}"
   done
+  log "$SCRIPT_NAME" "DEBUG" "VSPHERE_PASS=********"
 }
 
-# Function to set up log rotation using logrotate
 setup_log_rotation() {
   log "$SCRIPT_NAME" "DEBUG" "Entering setup_log_rotation"
   local logrotate_config="/etc/logrotate.d/vsphere-2-harvester"
@@ -99,44 +122,45 @@ EOF
 
 # --- 3. Helper Functions -----------------------------------------------------
 
-# Function to prompt for input if a variable is not set
 prompt_for_variable() {
-  log "$SCRIPT_NAME" "DEBUG" "Entering prompt_for_variable for $1"
   local var_name="$1"
   local prompt_message="$2"
   local default_value="${3:-}"
 
-  if [[ -z "${!var_name:-}" ]]; then
-    if [[ -n "$default_value" ]]; then
-      log "$SCRIPT_NAME" "INFO" "Prompting for $var_name with default value"
-      read -rp "$prompt_message [$default_value]: " input
+  local current_value="${!var_name:-}"
+  if [[ -n "$current_value" && "$var_name" != "VSPHERE_PASS" ]]; then
+    read -rp "$prompt_message [$current_value]: " input
+    export "$var_name"="${input:-$current_value}"
+    log "$SCRIPT_NAME" "INFO" "$var_name set to '${!var_name}'"
+  elif [[ "$var_name" == "VSPHERE_PASS" && -n "$current_value" ]]; then
+    read -rsp "$prompt_message [********]: " input
+    echo
+    export "$var_name"="${input:-$current_value}"
+    log "$SCRIPT_NAME" "INFO" "$var_name set (hidden)"
+  else
+    if [[ "$var_name" == "VSPHERE_PASS" ]]; then
+      read -rsp "$prompt_message: " input
+      echo
+      export "$var_name"="$input"
+      log "$SCRIPT_NAME" "INFO" "$var_name set (hidden)"
+    else
+      read -rp "$prompt_message${default_value:+ [$default_value]}: " input
       export "$var_name"="${input:-$default_value}"
       log "$SCRIPT_NAME" "INFO" "$var_name set to '${!var_name}'"
-    else
-      log "$SCRIPT_NAME" "INFO" "Prompting for $var_name (no default)"
-      read -rp "$prompt_message: " input
-      export "$var_name"="$input"
-      log "$SCRIPT_NAME" "INFO" "$var_name set to '${!var_name}'"
     fi
-  else
-    log "$SCRIPT_NAME" "INFO" "$var_name already set to '${!var_name}', skipping prompt"
   fi
-  log "$SCRIPT_NAME" "DEBUG" "Exiting prompt_for_variable for $var_name"
 }
 
-# Function to check if a command exists
 command_exists() {
   log "$SCRIPT_NAME" "DEBUG" "Checking if command '$1' exists"
   command -v "$1" &>/dev/null
 }
 
-# Function to check if a Kubernetes resource exists
 resource_exists() {
   log "$SCRIPT_NAME" "DEBUG" "Checking if resource $1/$2 exists in namespace $3"
   local resource_type="$1"
   local resource_name="$2"
   local namespace="$3"
-
   local output
   if output=$(kubectl get "$resource_type" "$resource_name" -n "$namespace" 2>&1); then
     log "$SCRIPT_NAME" "DEBUG" "kubectl get $resource_type $resource_name -n $namespace output: $output"
@@ -149,7 +173,6 @@ resource_exists() {
   fi
 }
 
-# Function to save configuration to a file
 save_config() {
   log "$SCRIPT_NAME" "DEBUG" "Entering save_config"
   log "$SCRIPT_NAME" "INFO" "Saving configuration to $CONFIG_FILE..."
@@ -161,11 +184,11 @@ VSPHERE_DC="$VSPHERE_DC"
 SRC_NET="$SRC_NET"
 DST_NET="$DST_NET"
 EOF
+  chmod 600 "$CONFIG_FILE"
   log "$SCRIPT_NAME" "INFO" "Configuration saved successfully."
   log "$SCRIPT_NAME" "DEBUG" "Exiting save_config"
 }
 
-# Function to load configuration from a file
 load_config() {
   log "$SCRIPT_NAME" "DEBUG" "Entering load_config"
   if [[ -f "$CONFIG_FILE" ]]; then
@@ -185,16 +208,14 @@ check_prerequisites() {
   log "$SCRIPT_NAME" "DEBUG" "Entering check_prerequisites"
   log "$SCRIPT_NAME" "INFO" "Checking prerequisites..."
 
-  # Check if kubectl is installed
   if ! command_exists kubectl; then
     log "$SCRIPT_NAME" "ERROR" "kubectl not found. Please install and configure it."
-    exit 1
+    exit 10
   else
     log "$SCRIPT_NAME" "INFO" "kubectl found: $(command -v kubectl)"
     log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client --short 2>&1)"
   fi
 
-  # Ensure log rotation is set up
   setup_log_rotation
   log "$SCRIPT_NAME" "DEBUG" "Exiting check_prerequisites"
 }
@@ -206,7 +227,6 @@ create_vsphere_secret() {
   log "$SCRIPT_NAME" "INFO" "Ensuring vSphere credentials secret exists in Kubernetes..."
   if ! resource_exists "secret" "vsphere-credentials" "default"; then
     log "$SCRIPT_NAME" "INFO" "Creating secret 'vsphere-credentials' in namespace 'default'"
-    log "$SCRIPT_NAME" "DEBUG" "kubectl create secret generic vsphere-credentials --from-literal=username=*** --from-literal=password=*** -n default"
     kubectl create secret generic vsphere-credentials \
       --from-literal=username="$VSPHERE_USER" \
       --from-literal=password="$VSPHERE_PASS" \
@@ -223,7 +243,6 @@ create_vmware_source() {
   log "$SCRIPT_NAME" "INFO" "Ensuring VmwareSource resource exists..."
   if ! resource_exists "vmwaresource.migration" "vcsim" "default"; then
     log "$SCRIPT_NAME" "INFO" "Creating VmwareSource 'vcsim' in namespace 'default'"
-    log "$SCRIPT_NAME" "DEBUG" "kubectl apply -f - <<EOF ...EOF"
     cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VmwareSource
@@ -268,7 +287,7 @@ wait_for_vmware_source_ready() {
     log "$SCRIPT_NAME" "ERROR" "VmwareSource did not become ready. Check your configuration."
     log "$SCRIPT_NAME" "INFO" "Full resource details:"
     kubectl get vmwaresource.migration vcsim -n default -o yaml | tee -a "$GENERAL_LOG_FILE"
-    exit 1
+    exit 20
   fi
   log "$SCRIPT_NAME" "DEBUG" "Exiting wait_for_vmware_source_ready"
 }
@@ -278,7 +297,6 @@ create_virtual_machine_import() {
   log "$SCRIPT_NAME" "INFO" "Ensuring VirtualMachineImport resource exists for VM: $VM_NAME"
   if ! resource_exists "virtualmachineimport.migration" "$VM_NAME" "default"; then
     log "$SCRIPT_NAME" "INFO" "Creating VirtualMachineImport '$VM_NAME' in namespace 'default'"
-    log "$SCRIPT_NAME" "DEBUG" "kubectl apply -f - <<EOF ...EOF"
     cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VirtualMachineImport
@@ -309,21 +327,19 @@ monitor_import_status() {
   local vm_log_file="$LOG_DIR/${VM_NAME}.log"
   log "$SCRIPT_NAME" "INFO" "Starting migration process for VM: $VM_NAME" "$vm_log_file"
 
-  # Identify the vm-import-controller pod
   log "$SCRIPT_NAME" "INFO" "Locating vm-import-controller pod..." "$vm_log_file"
   VM_IMPORT_CONTROLLER_POD=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
   log "$SCRIPT_NAME" "DEBUG" "kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2 output: $VM_IMPORT_CONTROLLER_POD" "$vm_log_file"
 
   if [[ -z "$VM_IMPORT_CONTROLLER_POD" ]]; then
     log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found. Check your Harvester installation." "$vm_log_file"
-    exit 1
+    exit 30
   else
     log "$SCRIPT_NAME" "INFO" "Found vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD" "$vm_log_file"
   fi
 
   log "$SCRIPT_NAME" "INFO" "Streaming logs from vm-import-controller pod: $VM_IMPORT_CONTROLLER_POD" "$vm_log_file"
 
-  # Function to stream logs with reconnection
   stream_logs_smart_tail() {
     log "$SCRIPT_NAME" "DEBUG" "Entering stream_logs_smart_tail"
     local last_line_hash=""
@@ -363,15 +379,13 @@ monitor_import_status() {
     log "$SCRIPT_NAME" "DEBUG" "Exiting stream_logs_smart_tail"
   }
 
-  # Start log streaming in the background
   log "$SCRIPT_NAME" "INFO" "Starting background log streaming for vm-import-controller" "$vm_log_file"
   stream_logs_smart_tail &
   LOG_STREAM_PID=$!
 
-  # Start monitoring the import status
   (
     log "$SCRIPT_NAME" "INFO" "Monitoring import status for VM: $VM_NAME" "$vm_log_file"
-    for i in {1..60}; do  # Increased timeout to 60 iterations (10 minutes total)
+    for i in {1..60}; do
       log "$SCRIPT_NAME" "DEBUG" "Import status check iteration $i" "$vm_log_file"
       IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
       log "$SCRIPT_NAME" "DEBUG" "kubectl get virtualmachineimport.migration $VM_NAME -n default -o jsonpath='{.status.importStatus}' output: $IMPORT_STATUS" "$vm_log_file"
@@ -392,17 +406,15 @@ monitor_import_status() {
       log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs." "$vm_log_file"
       log "$SCRIPT_NAME" "INFO" "Full resource details:" "$vm_log_file"
       kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml | tee -a "$vm_log_file"
-      exit 1
+      exit 40
     fi
     log "$SCRIPT_NAME" "INFO" "Import monitoring completed for VM: $VM_NAME" "$vm_log_file"
   ) &
   MONITOR_PID=$!
 
-  # Wait for the monitoring process to finish
   log "$SCRIPT_NAME" "INFO" "Waiting for import monitoring process to finish..." "$vm_log_file"
   wait $MONITOR_PID
 
-  # Kill the log streaming process
   log "$SCRIPT_NAME" "INFO" "Stopping background log streaming for vm-import-controller" "$vm_log_file"
   kill $LOG_STREAM_PID 2>/dev/null
 
@@ -419,20 +431,19 @@ main() {
   check_prerequisites
   load_config
 
-  # Prompt for required inputs
-  prompt_for_variable "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}"
-  prompt_for_variable "VSPHERE_PASS" "Enter vSphere password" "${VSPHERE_PASS:-}"
-  prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)" "${VSPHERE_ENDPOINT:-}"
-  prompt_for_variable "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-}"
-  prompt_for_variable "SRC_NET" "Enter source network name" "${SRC_NET:-}"
-  prompt_for_variable "DST_NET" "Enter destination network name" "${DST_NET:-}"
+  # Prompt for required inputs, showing config and allowing adjustment
+  prompt_for_variable "VSPHERE_USER" "Enter vSphere username"
+  prompt_for_variable "VSPHERE_PASS" "Enter vSphere password"
+  prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)"
+  prompt_for_variable "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}"
+  prompt_for_variable "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}"
+  prompt_for_variable "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}"
   prompt_for_variable "VM_NAME" "Enter VM name"
-  prompt_for_variable "VM_FOLDER" "Enter VM folder (optional)" ""
+  prompt_for_variable "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}"
 
   log_environment
   save_config
 
-  # Create resources and monitor the migration
   create_vsphere_secret
   create_vmware_source
   wait_for_vmware_source_ready
