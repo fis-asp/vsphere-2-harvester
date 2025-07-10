@@ -467,6 +467,8 @@ main() {
   log "$SCRIPT_NAME" "INFO" "This workflow will guide you through migrating a VM from vSphere to Harvester."
   log "$SCRIPT_NAME" "INFO" "Verbose mode: $VERBOSE"
 
+  setup_log_rotation
+
   # Load config if present
   if [[ -f "$CONFIG_FILE" ]]; then
     log "$SCRIPT_NAME" "INFO" "Loading configuration from $CONFIG_FILE"
@@ -487,7 +489,6 @@ main() {
 
   # Step 1: Prerequisite check
   check_prerequisites
-  setup_log_rotation
 
   # Step 2: Create vSphere secret
   create_vsphere_secret
