@@ -3,7 +3,7 @@ import_monitor_status() {
   local vm_name="$1"
   local log_file="${2:-/var/log/vsphere-2-harvester/${vm_name}.log}"
   local namespace="default"
-  local max_wait=60
+  local max_wait=600
 
   echo
   echo "========== Import Monitor =========="

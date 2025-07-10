@@ -463,9 +463,9 @@ switch_vm_disks_to_sata() {
 # --- Main Workflow ---
 
 main() {
-  log "$SCRIPT_NAME" "INFO" "Welcome to the vSphere-to-Harvester Migration Tool!"
-  log "$SCRIPT_NAME" "INFO" "This workflow will guide you through migrating a VM from vSphere to Harvester."
-  log "$SCRIPT_NAME" "INFO" "Verbose mode: $VERBOSE"
+  log "$SCRIPT_NAME" "INFO" "Hello, this is the vSphere-to-Harvester Migration Tool!"
+  log "$SCRIPT_NAME" "INFO" "Its meant to orchestrate migrating a VM from vSphere to Harvester."
+  log "$SCRIPT_NAME" "INFO" "Using Verbose mode: $VERBOSE"
 
   setup_log_rotation
 
