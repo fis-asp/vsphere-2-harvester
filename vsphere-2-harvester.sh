@@ -471,7 +471,7 @@ set_vm_disks_to_sata_and_reboot() {
 
   # Remove runStrategy and set running=false in one patch if runStrategy is present
   local run_strategy
-  run_strategy=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.running}' 2>/dev/null || echo "")
+  run_strategy=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.runStrategy}' 2>/dev/null || echo "")
   if [[ -n "$run_strategy" && "$run_strategy" != "null" ]]; then
     log "$SCRIPT_NAME" "INFO" "Removing runStrategy '$run_strategy' and setting running=false for VM '$vm_name'"
     if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
