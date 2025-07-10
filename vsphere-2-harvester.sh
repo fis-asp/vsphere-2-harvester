@@ -20,6 +20,8 @@ GENERAL_LOG_FILE="$LOG_DIR/general.log"
 SCRIPT_NAME="VSPHERE-2-HARVESTER"
 VERBOSE=0
 
+source ./import_monitor.sh
+
 DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
@@ -280,31 +282,6 @@ EOF
   fi
 }
 
-monitor_import_status() {
-  echo
-  echo "========== Step 6: Monitor Import Status =========="
-  echo "Monitoring import status for VM: $VM_NAME (this may take several minutes)..."
-  log "$SCRIPT_NAME" "INFO" "Monitoring import status for VM: $VM_NAME"
-  for i in {1..60}; do
-    IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
-    log "$SCRIPT_NAME" "DEBUG" "Import status: $IMPORT_STATUS"
-    if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
-      log "$SCRIPT_NAME" "INFO" "Import successful! VM is running."
-      echo "Success: Import completed and VM is running."
-      return
-    elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
-      log "$SCRIPT_NAME" "WARNING" "VirtualMachineImport not found yet, waiting..."
-    else
-      log "$SCRIPT_NAME" "INFO" "Current import status: $IMPORT_STATUS, waiting..."
-    fi
-    sleep 10
-  done
-  log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
-  kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml | tee -a "$GENERAL_LOG_FILE"
-  echo "ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
-  exit 40
-}
-
 soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
@@ -385,6 +362,7 @@ set_vm_disks_to_sata_and_reboot() {
 
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
+  # shellcheck disable=SC2207
   disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
   disk_count=${#disk_names[@]}
 
@@ -483,7 +461,7 @@ main() {
   create_virtual_machine_import
 
   # Step 6: Monitor import status
-  monitor_import_status
+  import_monitor_status "$VM_NAME"
 
   # Step 7: Post-import actions
   set_vm_disks_to_sata_and_reboot
