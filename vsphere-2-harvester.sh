@@ -427,55 +427,110 @@ set_vm_disks_to_sata_and_reboot() {
   log "$SCRIPT_NAME" "DEBUG" "Entering set_vm_disks_to_sata_and_reboot"
   local vm_name="$VM_NAME"
   local namespace="default"
+  local max_wait=60
+
+  # Check if VM exists
+  if ! kubectl get vm "$vm_name" -n "$namespace" &>/dev/null; then
+    log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' does not exist in namespace '$namespace'."
+    return 1
+  fi
 
   echo
   echo "Would you like to set all disks of VM '$vm_name' to use bus: sata and reboot the VM?"
   read -rp "Type 'yes' to proceed, or anything else to skip: " confirm
   if [[ "$confirm" != "yes" ]]; then
     log "$SCRIPT_NAME" "INFO" "User chose not to patch disks or reboot VM '$vm_name'. Skipping."
-    return
+    return 0
   fi
 
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
   # Get the number of disks
-  local disk_count
-  disk_count=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' | wc -w)
+  local disk_names
+  # shellcheck disable=SC2207
+  disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}'))
+  local disk_count=${#disk_names[@]}
 
   if [[ "$disk_count" -eq 0 ]]; then
     log "$SCRIPT_NAME" "WARNING" "No disks found for VM '$vm_name'. Skipping SATA patch."
-    return
+  else
+    for ((i=0; i<disk_count; i++)); do
+      local disk_name="${disk_names[$i]}"
+      local current_bus
+      current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}" 2>/dev/null || echo "")
+      if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
+        log "$SCRIPT_NAME" "INFO" "Patching disk '$disk_name' (index $i) to use bus: sata (was: $current_bus)"
+        if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
+          -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"; then
+          log "$SCRIPT_NAME" "ERROR" "Failed to patch disk '$disk_name' (index $i) to bus: sata"
+          return 2
+        fi
+      else
+        log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
+      fi
+    done
   fi
 
-  for ((i=0; i<disk_count; i++)); do
-    current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}")
-    disk_name=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].name}")
-    if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
-      log "$SCRIPT_NAME" "INFO" "Patching disk '$disk_name' (index $i) to use bus: sata (was: $current_bus)"
-      kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
-        -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"
-    else
-      log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
+  # Remove runStrategy if present
+  local run_strategy
+  run_strategy=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.runStrategy}' 2>/dev/null || echo "")
+  if [[ -n "$run_strategy" && "$run_strategy" != "null" ]]; then
+    log "$SCRIPT_NAME" "INFO" "Removing runStrategy '$run_strategy' from VM '$vm_name' to allow running field control"
+    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' -p='[{"op": "remove", "path": "/spec/runStrategy"}]'; then
+      log "$SCRIPT_NAME" "ERROR" "Failed to remove runStrategy from VM '$vm_name'."
+      return 3
     fi
-  done
+  fi
 
   # Reboot the VM (stop, wait, start)
   log "$SCRIPT_NAME" "INFO" "Rebooting VM '$vm_name' to apply disk bus changes"
-  kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'
+  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'; then
+    log "$SCRIPT_NAME" "ERROR" "Failed to stop VM '$vm_name'."
+    return 4
+  fi
 
   # Wait for the VM to stop
-  for i in {1..30}; do
+  local waited=0
+  while true; do
+    local status
     status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
     log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to stop (current status: $status)"
     if [[ "$status" == "Stopped" ]]; then
       break
     fi
+    ((waited++))
+    if [[ "$waited" -ge "$max_wait" ]]; then
+      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop."
+      return 5
+    fi
     sleep 2
   done
 
-  kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'
-  log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully"
+  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'; then
+    log "$SCRIPT_NAME" "ERROR" "Failed to start VM '$vm_name'."
+    return 6
+  fi
+
+  # Wait for the VM to start
+  waited=0
+  while true; do
+    local status
+    status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to start (current status: $status)"
+    if [[ "$status" == "Running" ]]; then
+      break
+    fi
+    ((waited++))
+    if [[ "$waited" -ge "$max_wait" ]]; then
+      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to start."
+      return 7
+    fi
+    sleep 2
+  done
+
+  log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully and all disks are set to bus: sata"
   log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
+  return 0
 }
 
 # --- 6. Main Script ----------------------------------------------------------
