@@ -183,6 +183,9 @@ VSPHERE_ENDPOINT="$VSPHERE_ENDPOINT"
 VSPHERE_DC="$VSPHERE_DC"
 SRC_NET="$SRC_NET"
 DST_NET="$DST_NET"
+CATTLE_ACCESS_KEY="$CATTLE_ACCESS_KEY"
+CATTLE_SECRET_KEY="$CATTLE_SECRET_KEY"
+HARVESTER_URL="$HARVESTER_URL"
 EOF
   chmod 600 "$CONFIG_FILE"
   log "$SCRIPT_NAME" "INFO" "Configuration saved successfully."
@@ -428,14 +431,7 @@ set_vm_disks_to_sata_and_reboot() {
   local vm_name="$VM_NAME"
   local namespace="default"
   local max_wait=60
-  local disk_names
-  local disk_count
-  local i
-  local disk_name
-  local current_bus
-  local run_strategy
-  local waited
-  local status
+  local disk_names disk_count i disk_name current_bus run_strategy waited status
 
   if ! kubectl get vm "$vm_name" -n "$namespace" &>/dev/null; then
     log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' does not exist in namespace '$namespace'."
@@ -443,7 +439,7 @@ set_vm_disks_to_sata_and_reboot() {
   fi
 
   echo
-  echo "Would you like to set all disks of VM '$vm_name' to use bus: sata and reboot the VM?"
+  echo "Would you like to set all disks of VM '$vm_name' to use bus: sata and soft reboot the VM via Harvester API?"
   read -rp "Type 'yes' to proceed, or anything else to skip: " confirm
   if [[ "$confirm" != "yes" ]]; then
     log "$SCRIPT_NAME" "INFO" "User chose not to patch disks or reboot VM '$vm_name'. Skipping."
@@ -452,7 +448,6 @@ set_vm_disks_to_sata_and_reboot() {
 
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
-  # shellcheck disable=SC2207
   disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
   disk_count=${#disk_names[@]}
 
@@ -475,71 +470,58 @@ set_vm_disks_to_sata_and_reboot() {
     done
   fi
 
-  # Remove runStrategy and set running=false in one patch if runStrategy is present
-  run_strategy=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.runStrategy}' 2>/dev/null || echo "")
-  if [[ -n "$run_strategy" && "$run_strategy" != "null" ]]; then
-    log "$SCRIPT_NAME" "INFO" "Removing runStrategy '$run_strategy' and setting running=false for VM '$vm_name'"
-    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
-      -p='[{"op": "remove", "path": "/spec/runStrategy"}, {"op": "add", "path": "/spec/running", "value": false}]'; then
-      log "$SCRIPT_NAME" "ERROR" "Failed to remove runStrategy and set running=false for VM '$vm_name'."
-      return 3
-    fi
-  else
-    # If runStrategy is not present, just set running=false
-    log "$SCRIPT_NAME" "INFO" "Setting running=false for VM '$vm_name'"
-    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'; then
-      log "$SCRIPT_NAME" "ERROR" "Failed to stop VM '$vm_name'."
-      return 4
-    fi
+  # Soft reboot via Harvester API
+  if ! soft_reboot_vm_via_api "$vm_name" "$namespace"; then
+    log "$SCRIPT_NAME" "ERROR" "Soft reboot via Harvester API failed for VM '$vm_name'."
+    return 8
   fi
 
-  # Wait for the VM to stop
-  waited=0
-  while true; do
-    status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
-    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to stop (current status: $status)"
-    if [[ "$status" == "Stopped" ]]; then
-      break
-    fi
-    ((waited++))
-    if [[ "$waited" -ge "$max_wait" ]]; then
-      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop."
-      return 5
-    fi
-    sleep 2
-  done
-
-  log "$SCRIPT_NAME" "DEBUG" "VM '$vm_name' has stopped, proceeding to start it again."
-
-  # Start the VM
-  log "$SCRIPT_NAME" "INFO" "Setting running=true for VM '$vm_name'"
-  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'; then
-    log "$SCRIPT_NAME" "ERROR" "Failed to start VM '$vm_name'."
-    return 6
-  fi
-
-  # Wait for the VM to start
+  # Wait for the VM to be Running again
+  local waited=0
+  local status
   set +e
-  waited=0
   while true; do
     status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
-    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to stop (current status: $status)"
-    if [[ "$status" == "Stopped" ]]; then
+    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to be Running after soft reboot (current status: $status)"
+    if [[ "$status" == "Running" ]]; then
       break
     fi
     ((waited++))
     if [[ "$waited" -ge "$max_wait" ]]; then
-      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop."
+      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to be Running after soft reboot."
       set -e
-      return 5
+      return 9
     fi
     sleep 2
   done
   set -e
 
-  log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully and all disks are set to bus: sata"
+  log "$SCRIPT_NAME" "INFO" "VM '$vm_name' soft rebooted successfully and all disks are set to bus: sata"
   log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
   return 0
+}
+
+
+soft_reboot_vm_via_api() {
+  local vm_name="$1"
+  local namespace="${2:-default}"
+  log "$SCRIPT_NAME" "INFO" "Attempting soft reboot of VM '$vm_name' via Harvester API..."
+
+  local url="${HARVESTER_URL}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=softreboot"
+  local response
+  response=$(curl -s -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
+    -X POST \
+    -H 'Accept: application/json' \
+    -H 'Content-Type: application/json' \
+    "$url")
+
+  if echo "$response" | grep -q '"type":"error"'; then
+    log "$SCRIPT_NAME" "ERROR" "Soft reboot failed for VM '$vm_name'. Response: $response"
+    return 1
+  else
+    log "$SCRIPT_NAME" "INFO" "Soft reboot triggered for VM '$vm_name'."
+    return 0
+  fi
 }
 
 
@@ -553,6 +535,9 @@ main() {
   load_config
 
   # Prompt for required inputs, showing config and allowing adjustment
+  prompt_for_variable "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key"
+  prompt_for_variable "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key"
+  prompt_for_variable "HARVESTER_URL" "Enter Harvester API URL (e.g. https://your-harvester.example.com)"
   prompt_for_variable "VSPHERE_USER" "Enter vSphere username"
   prompt_for_variable "VSPHERE_PASS" "Enter vSphere password"
   prompt_for_variable "VSPHERE_ENDPOINT" "Enter vSphere endpoint (e.g., https://your-vcenter/sdk)"
