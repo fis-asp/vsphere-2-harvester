@@ -286,7 +286,7 @@ soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
   local namespace="${2:-default}"
-  local url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=softreboot"
+  local url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=restart"
   local response
   local http_code
   local curl_error
