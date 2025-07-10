@@ -503,25 +503,51 @@ set_vm_disks_to_sata_and_reboot() {
 
 
 soft_reboot_vm_via_api() {
+  log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
   local namespace="${2:-default}"
-  log "$SCRIPT_NAME" "INFO" "Attempting soft reboot of VM '$vm_name' via Harvester API..."
-
   local url="${HARVESTER_URL}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=softreboot"
   local response
-  response=$(curl -s -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
+  local http_code
+  local curl_error
+
+  log "$SCRIPT_NAME" "INFO" "Preparing to soft reboot VM '$vm_name' in namespace '$namespace' via Harvester API."
+  log "$SCRIPT_NAME" "DEBUG" "Soft reboot URL: $url"
+  log "$SCRIPT_NAME" "DEBUG" "Using provided CATTLE_ACCESS_KEY (not shown) and CATTLE_SECRET_KEY (not shown)."
+
+  # Perform the API call and capture HTTP status and any curl error
+  response=$(curl -sS -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
     -X POST \
     -H 'Accept: application/json' \
     -H 'Content-Type: application/json' \
-    "$url")
+    "$url" 2>&1)
+  curl_error=$?
+
+  # Split response and HTTP code
+  http_code=$(echo "$response" | tail -n1)
+  response=$(echo "$response" | sed '$d')
+
+  log "$SCRIPT_NAME" "DEBUG" "HTTP status code: $http_code"
+  log "$SCRIPT_NAME" "DEBUG" "Raw API response: $response"
+
+  if [[ $curl_error -ne 0 ]]; then
+    log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
+    return 2
+  fi
+
+  if [[ "$http_code" -ge 400 ]]; then
+    log "$SCRIPT_NAME" "ERROR" "Soft reboot API call returned HTTP $http_code. Response: $response"
+    return 3
+  fi
 
   if echo "$response" | grep -q '"type":"error"'; then
-    log "$SCRIPT_NAME" "ERROR" "Soft reboot failed for VM '$vm_name'. Response: $response"
+    log "$SCRIPT_NAME" "ERROR" "Soft reboot failed for VM '$vm_name'. API error in response: $response"
     return 1
-  else
-    log "$SCRIPT_NAME" "INFO" "Soft reboot triggered for VM '$vm_name'."
-    return 0
   fi
+
+  log "$SCRIPT_NAME" "INFO" "Soft reboot triggered for VM '$vm_name' (HTTP $http_code)."
+  log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
+  return 0
 }
 
 
