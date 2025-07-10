@@ -294,6 +294,7 @@ wait_for_vmware_source_ready() {
 
 create_virtual_machine_import() {
   log "$SCRIPT_NAME" "DEBUG" "Entering create_virtual_machine_import"
+  # shellcheck disable=SC2153
   log "$SCRIPT_NAME" "INFO" "Ensuring VirtualMachineImport resource exists for VM: $VM_NAME"
   if ! resource_exists "virtualmachineimport.migration" "$VM_NAME" "default"; then
     log "$SCRIPT_NAME" "INFO" "Creating VirtualMachineImport '$VM_NAME' in namespace 'default'"
@@ -422,6 +423,52 @@ monitor_import_status() {
   log "$SCRIPT_NAME" "DEBUG" "Exiting monitor_import_status"
 }
 
+set_vm_disks_to_sata_and_reboot() {
+  log "$SCRIPT_NAME" "DEBUG" "Entering set_vm_disks_to_sata_and_reboot"
+  local vm_name="$VM_NAME"
+  local namespace="default"
+
+  echo
+  echo "Would you like to set all disks of VM '$vm_name' to use bus: sata and reboot the VM?"
+  read -rp "Type 'yes' to proceed, or anything else to skip: " confirm
+  if [[ "$confirm" != "yes" ]]; then
+    log "$SCRIPT_NAME" "INFO" "User chose not to patch disks or reboot VM '$vm_name'. Skipping."
+    return
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
+
+  # Get the number of disks
+  local disk_count
+  disk_count=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' | wc -w)
+
+  if [[ "$disk_count" -eq 0 ]]; then
+    log "$SCRIPT_NAME" "WARNING" "No disks found for VM '$vm_name'. Skipping SATA patch."
+    return
+  fi
+
+  for ((i=0; i<disk_count; i++)); do
+    # Check current bus type
+    current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}")
+    disk_name=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].name}")
+    if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
+      log "$SCRIPT_NAME" "INFO" "Patching disk '$disk_name' (index $i) to use bus: sata (was: $current_bus)"
+      kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
+        -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"
+    else
+      log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
+    fi
+  done
+
+  # Reboot the VM (stop, then start)
+  log "$SCRIPT_NAME" "INFO" "Rebooting VM '$vm_name' to apply disk bus changes"
+  kubectl virt stop "$vm_name" -n "$namespace"
+  sleep 5
+  kubectl virt start "$vm_name" -n "$namespace"
+  log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully"
+  log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
+}
+
 # --- 6. Main Script ----------------------------------------------------------
 
 main() {
@@ -451,6 +498,8 @@ main() {
   monitor_import_status
 
   log "$SCRIPT_NAME" "INFO" "Migration process completed for VM: $VM_NAME"
+  set_vm_disks_to_sata_and_reboot
+
   log "$SCRIPT_NAME" "DEBUG" "Script finished"
 }
 
