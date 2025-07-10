@@ -213,7 +213,7 @@ check_prerequisites() {
     exit 10
   else
     log "$SCRIPT_NAME" "INFO" "kubectl found: $(command -v kubectl)"
-    log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client --short 2>&1)"
+    log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client 2>&1)"
   fi
 
   setup_log_rotation
