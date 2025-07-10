@@ -3,8 +3,8 @@
 ###############################################################################
 # vsphere-2-harvester.sh
 #
-# Migration of VMware vSphere
-# VMs to Harvester using the vm-import-controller and Harvester API.
+# Migrate VMware vSphere VMs to Harvester using 
+# the vm-import-controller and Harvester API.
 #
 # Usage:
 #   ./vsphere-2-harvester.sh [--verbose|-v] [--help|-h]
@@ -64,24 +64,40 @@ log() {
 # --- UX Helper Functions ---
 
 prompt_for_var() {
-  local var="$1" prompt="$2" default="$3" secret="${4:-0}"
+  local var="$1" prompt="$2" default="$3" example="$4" secret="${5:-0}"
   local current="${!var:-}"
   local showval="$current"
   [[ "$secret" == "1" && -n "$current" ]] && showval="********"
-  if [[ -n "$showval" ]]; then
-    if [[ "$secret" == "1" ]]; then
-      read -rsp "$prompt [$showval]: " input; echo
-    else
-      read -rp "$prompt [$showval]: " input
-    fi
-    [[ -n "$input" ]] && export "$var"="$input"
+  echo
+  echo "------------------------------------------------------"
+  echo "$prompt"
+  [[ -n "$example" ]] && echo "  Example: $example"
+  [[ -n "$showval" ]] && echo "  Current value: $showval"
+  [[ -n "$default" ]] && echo "  Default: $default"
+  echo "  (Press Enter to keep current/default, or type new value)"
+  if [[ "$secret" == "1" ]]; then
+    read -rsp "> " input; echo
   else
-    if [[ "$secret" == "1" ]]; then
-      read -rsp "$prompt${default:+ [$default]}: " input; echo
-    else
-      read -rp "$prompt${default:+ [$default]}: " input
-    fi
-    export "$var"="${input:-$default}"
+    read -rp "> " input
+  fi
+  if [[ -n "$input" ]]; then
+    export "$var"="$input"
+    log "$SCRIPT_NAME" "INFO" "$var set to user input"
+  elif [[ -n "$current" ]]; then
+    export "$var"="$current"
+    log "$SCRIPT_NAME" "INFO" "$var kept as current value"
+  else
+    export "$var"="$default"
+    log "$SCRIPT_NAME" "INFO" "$var set to default"
+  fi
+  # Simple validation examples
+  if [[ "$var" == "HARVESTER_URL" && ! "${!var}" =~ ^https:// ]]; then
+    echo "WARNING: Harvester URL should start with 'https://'"
+    log "$SCRIPT_NAME" "WARNING" "HARVESTER_URL does not start with https://"
+  fi
+  if [[ "$var" == "VSPHERE_ENDPOINT" && ! "${!var}" =~ ^https:// ]]; then
+    echo "WARNING: vSphere endpoint should start with 'https://'"
+    log "$SCRIPT_NAME" "WARNING" "VSPHERE_ENDPOINT does not start with https://"
   fi
 }
 
@@ -104,16 +120,16 @@ review_and_adjust_config() {
     echo "Enter=Continue, q=Quit"
     read -rp "Choice: " choice
     case "$choice" in
-      1) prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "$HARVESTER_URL" ;;
-      2) prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "$CATTLE_ACCESS_KEY" ;;
-      3) prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "$CATTLE_SECRET_KEY" 1 ;;
-      4) prompt_for_var "VSPHERE_USER" "Enter vSphere username" "$VSPHERE_USER" ;;
-      5) prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "$VSPHERE_ENDPOINT" ;;
-      6) prompt_for_var "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" ;;
-      7) prompt_for_var "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}" ;;
-      8) prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}" ;;
-      9) prompt_for_var "VM_NAME" "Enter VM name" "$VM_NAME" ;;
-      10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "$VM_FOLDER" ;;
+      1) prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "${HARVESTER_URL:-}" "https://your-harvester.example.com" ;;
+      2) prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "${CATTLE_ACCESS_KEY:-}" "token-abc123" ;;
+      3) prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "${CATTLE_SECRET_KEY:-}" "long-secret-string" 1 ;;
+      4) prompt_for_var "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}" "administrator@vsphere.local" ;;
+      5) prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "${VSPHERE_ENDPOINT:-}" "https://your-vcenter/sdk" ;;
+      6) prompt_for_var "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" "ASP" ;;
+      7) prompt_for_var "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}" "RHV-Testing" ;;
+      8) prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}" "default/rhv-testing" ;;
+      9) prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}" "my-vm-name" ;;
+      10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}" "/Datacenter/vm/Folder" ;;
       ""|[Qq]) break ;;
       *) echo "Invalid choice. Try again."; sleep 1 ;;
     esac
@@ -138,19 +154,29 @@ EOF
   log "$SCRIPT_NAME" "INFO" "Configuration saved to $CONFIG_FILE"
 }
 
-# --- Technical Functions (as before, but improved UX) ---
+# --- Technical Functions (with context and logging) ---
 
 check_prerequisites() {
+  echo
+  echo "========== Step 1: Prerequisite Check =========="
+  echo "We will now check if 'kubectl' is installed and configured."
+  echo "This is required to interact with your Harvester cluster."
   log "$SCRIPT_NAME" "INFO" "Checking prerequisites..."
   if ! command -v kubectl &>/dev/null; then
-    log "$SCRIPT_NAME" "ERROR" "kubectl not found. Please install and configure it."
+    echo "ERROR: 'kubectl' not found. Please install and configure it for your Harvester cluster."
+    log "$SCRIPT_NAME" "ERROR" "kubectl not found. Exiting."
     exit 10
   fi
   log "$SCRIPT_NAME" "INFO" "kubectl found: $(command -v kubectl)"
   log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client 2>&1)"
+  echo "Success: kubectl is available and configured."
 }
 
 create_vsphere_secret() {
+  echo
+  echo "========== Step 2: Create vSphere Secret =========="
+  echo "We will now create a Kubernetes secret in Harvester to store your vSphere credentials."
+  echo "This allows Harvester to connect to your vSphere environment securely."
   log "$SCRIPT_NAME" "INFO" "Ensuring vSphere credentials secret exists in Harvester..."
   if ! kubectl get secret vsphere-credentials -n default &>/dev/null; then
     kubectl create secret generic vsphere-credentials \
@@ -158,12 +184,18 @@ create_vsphere_secret() {
       --from-literal=password="$VSPHERE_PASS" \
       -n default
     log "$SCRIPT_NAME" "INFO" "Secret 'vsphere-credentials' created."
+    echo "Success: vSphere secret created."
   else
     log "$SCRIPT_NAME" "INFO" "Secret 'vsphere-credentials' already exists. Skipping creation."
+    echo "vSphere secret already exists. Skipping."
   fi
 }
 
 create_vmware_source() {
+  echo
+  echo "========== Step 3: Create VmwareSource =========="
+  echo "We will now create or validate the VmwareSource resource in Harvester."
+  echo "This connects Harvester to your vSphere environment."
   log "$SCRIPT_NAME" "INFO" "Ensuring VmwareSource resource exists..."
   if ! kubectl get vmwaresource.migration vcsim -n default &>/dev/null; then
     cat <<EOF | kubectl apply -f -
@@ -180,18 +212,24 @@ spec:
     namespace: default
 EOF
     log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' created."
+    echo "Success: VmwareSource created."
   else
     log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' already exists. Skipping creation."
+    echo "VmwareSource already exists. Skipping."
   fi
 }
 
 wait_for_vmware_source_ready() {
-  log "$SCRIPT_NAME" "INFO" "Waiting for VmwareSource to be ready (this may take a minute)..."
+  echo
+  echo "========== Step 4: Wait for VmwareSource =========="
+  echo "Waiting for VmwareSource to be ready (this may take a minute)..."
+  log "$SCRIPT_NAME" "INFO" "Waiting for VmwareSource to be ready..."
   for i in {1..20}; do
     STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
     log "$SCRIPT_NAME" "DEBUG" "VmwareSource status: $STATUS"
     if [[ "$STATUS" == "clusterReady" ]]; then
       log "$SCRIPT_NAME" "INFO" "VmwareSource is ready."
+      echo "Success: VmwareSource is ready."
       return
     elif [[ "$STATUS" == "notfound" ]]; then
       log "$SCRIPT_NAME" "WARNING" "VmwareSource not found yet, waiting..."
@@ -202,10 +240,15 @@ wait_for_vmware_source_ready() {
   done
   log "$SCRIPT_NAME" "ERROR" "VmwareSource did not become ready. Check your configuration."
   kubectl get vmwaresource.migration vcsim -n default -o yaml | tee -a "$GENERAL_LOG_FILE"
+  echo "ERROR: VmwareSource did not become ready. Please check your configuration and try again."
   exit 20
 }
 
 create_virtual_machine_import() {
+  echo
+  echo "========== Step 5: Create VirtualMachineImport =========="
+  echo "We will now create the VirtualMachineImport resource in Harvester."
+  echo "This starts the migration of your VM from vSphere to Harvester."
   log "$SCRIPT_NAME" "INFO" "Ensuring VirtualMachineImport resource exists for VM: $VM_NAME"
   if ! kubectl get virtualmachineimport.migration "$VM_NAME" -n default &>/dev/null; then
     cat <<EOF | kubectl apply -f -
@@ -227,18 +270,24 @@ spec:
     apiVersion: migration.harvesterhci.io/v1beta1
 EOF
     log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' created."
+    echo "Success: VirtualMachineImport created."
   else
     log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
+    echo "VirtualMachineImport already exists. Skipping."
   fi
 }
 
 monitor_import_status() {
-  log "$SCRIPT_NAME" "INFO" "Monitoring import status for VM: $VM_NAME (this may take several minutes)..."
+  echo
+  echo "========== Step 6: Monitor Import Status =========="
+  echo "Monitoring import status for VM: $VM_NAME (this may take several minutes)..."
+  log "$SCRIPT_NAME" "INFO" "Monitoring import status for VM: $VM_NAME"
   for i in {1..60}; do
     IMPORT_STATUS=$(kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
     log "$SCRIPT_NAME" "DEBUG" "Import status: $IMPORT_STATUS"
     if [[ "$IMPORT_STATUS" == "virtualMachineRunning" ]]; then
       log "$SCRIPT_NAME" "INFO" "Import successful! VM is running."
+      echo "Success: Import completed and VM is running."
       return
     elif [[ "$IMPORT_STATUS" == "notfound" ]]; then
       log "$SCRIPT_NAME" "WARNING" "VirtualMachineImport not found yet, waiting..."
@@ -249,6 +298,7 @@ monitor_import_status() {
   done
   log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
   kubectl get virtualmachineimport.migration "$VM_NAME" -n default -o yaml | tee -a "$GENERAL_LOG_FILE"
+  echo "ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
   exit 40
 }
 
@@ -311,7 +361,11 @@ soft_reboot_vm_via_api() {
 }
 
 set_vm_disks_to_sata_and_reboot() {
-  log "$SCRIPT_NAME" "INFO" "You can now adjust the imported VM (e.g., set disks to SATA and soft reboot)."
+  echo
+  echo "========== Step 7: Post-Import Actions =========="
+  echo "You can now adjust the imported VM."
+  echo "For example, you may want to set all disks to use the SATA bus (for compatibility) and soft reboot the VM."
+  echo "This is optional, but recommended for most Linux and Windows VMs."
   local vm_name="$VM_NAME"
   local namespace="default"
   local max_wait=60
@@ -322,6 +376,7 @@ set_vm_disks_to_sata_and_reboot() {
   read -rp "Type 'yes' to proceed, or anything else to skip: " confirm
   if [[ "$confirm" != "yes" ]]; then
     log "$SCRIPT_NAME" "INFO" "User chose not to patch disks or reboot VM '$vm_name'. Skipping."
+    echo "Skipped post-import disk patch and reboot."
     return 0
   fi
 
@@ -332,6 +387,7 @@ set_vm_disks_to_sata_and_reboot() {
 
   if [[ "$disk_count" -eq 0 ]]; then
     log "$SCRIPT_NAME" "WARNING" "No disks found for VM '$vm_name'. Skipping SATA patch."
+    echo "No disks found for VM. Skipping SATA patch."
   else
     for ((i=0; i<disk_count; i++)); do
       disk_name="${disk_names[$i]}"
@@ -341,10 +397,13 @@ set_vm_disks_to_sata_and_reboot() {
         if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
           -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"; then
           log "$SCRIPT_NAME" "ERROR" "Failed to patch disk '$disk_name' (index $i) to bus: sata"
+          echo "ERROR: Failed to patch disk $disk_name to bus: sata"
           return 2
         fi
+        echo "Disk $disk_name patched to SATA."
       else
         log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
+        echo "Disk $disk_name already uses SATA."
       fi
     done
   fi
@@ -352,6 +411,7 @@ set_vm_disks_to_sata_and_reboot() {
   # Soft reboot via Harvester API
   if ! soft_reboot_vm_via_api "$vm_name" "$namespace"; then
     log "$SCRIPT_NAME" "ERROR" "Soft reboot via Harvester API failed for VM '$vm_name'."
+    echo "ERROR: Soft reboot via Harvester API failed."
     return 8
   fi
 
@@ -368,6 +428,7 @@ set_vm_disks_to_sata_and_reboot() {
     if [[ "$waited" -ge "$max_wait" ]]; then
       log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to be Running after soft reboot."
       set -e
+      echo "ERROR: Timeout waiting for VM to be Running after soft reboot."
       return 9
     fi
     sleep 2
@@ -375,6 +436,7 @@ set_vm_disks_to_sata_and_reboot() {
   set -e
 
   log "$SCRIPT_NAME" "INFO" "VM '$vm_name' soft rebooted successfully and all disks are set to bus: sata"
+  echo "Success: VM soft rebooted and all disks set to SATA."
 }
 
 # --- Main Workflow ---
@@ -391,18 +453,61 @@ main() {
     source "$CONFIG_FILE"
   fi
 
-  # Prompt for all required variables (with defaults)
-  prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "${HARVESTER_URL:-}"
-  prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "${CATTLE_ACCESS_KEY:-}"
-  prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "${CATTLE_SECRET_KEY:-}" 1
-  prompt_for_var "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}"
-  prompt_for_var "VSPHERE_PASS" "Enter vSphere password" "${VSPHERE_PASS:-}" 1
-  prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "${VSPHERE_ENDPOINT:-}"
-  prompt_for_var "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}"
-  prompt_for_var "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}"
-  prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}"
-  prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}"
-  prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}"
+  # Prompt for all required variables (with context, examples, and validation)
+  prompt_for_var "HARVESTER_URL" \
+    "Enter the Harvester API URL. This is the address of your Harvester management interface." \
+    "${HARVESTER_URL:-}" \
+    "https://your-harvester.example.com"
+
+  prompt_for_var "CATTLE_ACCESS_KEY" \
+    "Enter your Harvester API Access Key. You can generate this in the Harvester UI under your user profile > API Keys." \
+    "${CATTLE_ACCESS_KEY:-}" \
+    "token-abc123"
+
+  prompt_for_var "CATTLE_SECRET_KEY" \
+    "Enter your Harvester API Secret Key. This is shown only once when you create the API key in Harvester." \
+    "${CATTLE_SECRET_KEY:-}" \
+    "long-secret-string" 1
+
+  prompt_for_var "VSPHERE_USER" \
+    "Enter your vSphere username. This should be a user with permission to access the VM you want to migrate." \
+    "${VSPHERE_USER:-}" \
+    "administrator@vsphere.local"
+
+  prompt_for_var "VSPHERE_PASS" \
+    "Enter your vSphere password." \
+    "${VSPHERE_PASS:-}" \
+    "" 1
+
+  prompt_for_var "VSPHERE_ENDPOINT" \
+    "Enter your vSphere endpoint. This is the URL to your vCenter's SDK endpoint." \
+    "${VSPHERE_ENDPOINT:-}" \
+    "https://your-vcenter/sdk"
+
+  prompt_for_var "VSPHERE_DC" \
+    "Enter your vSphere datacenter name." \
+    "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" \
+    "ASP"
+
+  prompt_for_var "SRC_NET" \
+    "Enter the source network name as it appears in vSphere." \
+    "${SRC_NET:-$DEFAULT_SRC_NET}" \
+    "RHV-Testing"
+
+  prompt_for_var "DST_NET" \
+    "Enter the destination network name in Harvester (namespace/name format recommended)." \
+    "${DST_NET:-$DEFAULT_DST_NET}" \
+    "default/rhv-testing"
+
+  prompt_for_var "VM_NAME" \
+    "Enter the name of the VM to migrate (as it appears in vSphere)." \
+    "${VM_NAME:-}" \
+    "my-vm-name"
+
+  prompt_for_var "VM_FOLDER" \
+    "Enter the VM folder in vSphere (optional, e.g., /Datacenter/vm/Folder)." \
+    "${VM_FOLDER:-}" \
+    "/Datacenter/vm/Folder"
 
   # Review and adjust
   review_and_adjust_config
@@ -411,34 +516,30 @@ main() {
   save_config
 
   # Step 1: Prerequisite check
-  echo; echo "Step 1: Checking prerequisites..."
   check_prerequisites
 
   # Step 2: Create vSphere secret
-  echo; echo "Step 2: Creating vSphere credentials secret in Harvester..."
   create_vsphere_secret
 
   # Step 3: Create VmwareSource
-  echo; echo "Step 3: Creating/validating VmwareSource in Harvester..."
   create_vmware_source
 
   # Step 4: Wait for VmwareSource to be ready
-  echo; echo "Step 4: Waiting for VmwareSource to be ready..."
   wait_for_vmware_source_ready
 
   # Step 5: Create VirtualMachineImport
-  echo; echo "Step 5: Creating VirtualMachineImport resource..."
   create_virtual_machine_import
 
   # Step 6: Monitor import status
-  echo; echo "Step 6: Monitoring import status (this may take several minutes)..."
   monitor_import_status
 
   # Step 7: Post-import actions
-  echo; echo "Step 7: Post-import actions"
   set_vm_disks_to_sata_and_reboot
 
-  echo; echo "Migration workflow complete!"
+  echo
+  echo "========== Migration workflow complete! =========="
+  echo "Your VM '$VM_NAME' has been migrated to Harvester."
+  echo "You can now manage it via the Harvester UI."
   log "$SCRIPT_NAME" "INFO" "Migration process completed for VM: $VM_NAME"
   log "$SCRIPT_NAME" "DEBUG" "Script finished"
 }
