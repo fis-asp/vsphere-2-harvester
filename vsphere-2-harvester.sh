@@ -519,20 +519,23 @@ set_vm_disks_to_sata_and_reboot() {
   fi
 
   # Wait for the VM to start
+  set +e
   waited=0
   while true; do
     status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
-    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to start (current status: $status)"
-    if [[ "$status" == "Running" ]]; then
+    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to stop (current status: $status)"
+    if [[ "$status" == "Stopped" ]]; then
       break
     fi
     ((waited++))
     if [[ "$waited" -ge "$max_wait" ]]; then
-      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to start."
-      return 7
+      log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop."
+      set -e
+      return 5
     fi
     sleep 2
   done
+  set -e
 
   log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully and all disks are set to bus: sata"
   log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
