@@ -20,6 +20,7 @@ GENERAL_LOG_FILE="$LOG_DIR/general.log"
 SCRIPT_NAME="VSPHERE-2-HARVESTER"
 VERBOSE=0
 
+# shellcheck disable=SC1091
 source ./import_monitor.sh
 
 DEFAULT_VSPHERE_DC="ASP"
@@ -286,58 +287,91 @@ soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
   local namespace="${2:-default}"
-  local url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=restart"
-  local response
-  local http_code
-  local curl_error
+  local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
+  local response http_code curl_error
 
-  log "$SCRIPT_NAME" "INFO" "Preparing to soft reboot VM '$vm_name' in namespace '$namespace' via Harvester API."
-  log "$SCRIPT_NAME" "DEBUG" "Soft reboot URL: $url"
-  log "$SCRIPT_NAME" "DEBUG" "Using provided CATTLE_ACCESS_KEY (not shown) and CATTLE_SECRET_KEY (not shown)."
+  # Helper to call the API with a given action
+  _harvester_vm_action() {
+    local action="$1"
+    local url="${base_url}?action=${action}"
+    log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
+    log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
+    response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
+      -X POST \
+      -H 'Accept: application/json' \
+      -H 'Content-Type: application/json' \
+      "$url" 2>&1)
+    curl_error=$?
+    http_code=$(echo "$response" | tail -n1)
+    response=$(echo "$response" | sed '$d')
+    log "$SCRIPT_NAME" "DEBUG" "HTTP status code: $http_code"
+    log "$SCRIPT_NAME" "DEBUG" "Raw API response: $response"
+    if [[ $curl_error -ne 0 ]]; then
+      log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
+      log "$SCRIPT_NAME" "ERROR" "curl output: $response"
+      return 2
+    fi
+    if [[ "$http_code" =~ ^3 ]]; then
+      log "$SCRIPT_NAME" "WARNING" "Received HTTP $http_code (redirect). Check your HARVESTER_URL and ensure it is correct and uses https://"
+    fi
+    if [[ "$http_code" -ge 400 ]]; then
+      log "$SCRIPT_NAME" "ERROR" "API call '$action' returned HTTP $http_code. Response: $response"
+      return 3
+    fi
+    if [[ -z "$response" ]]; then
+      log "$SCRIPT_NAME" "WARNING" "API response is empty for action '$action'."
+    fi
+    if echo "$response" | grep -q '"type":"error"'; then
+      log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error in response: $response"
+      return 1
+    fi
+    log "$SCRIPT_NAME" "INFO" "API action '$action' triggered for VM '$vm_name' (HTTP $http_code)."
+    return 0
+  }
 
-  response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
-    -X POST \
-    -H 'Accept: application/json' \
-    -H 'Content-Type: application/json' \
-    "$url" 2>&1)
-  curl_error=$?
+  # 1. Try restart
+  _harvester_vm_action "restart"
+  log "$SCRIPT_NAME" "INFO" "Waiting 10 seconds after restart..."
+  sleep 10
 
-  http_code=$(echo "$response" | tail -n1)
-  response=$(echo "$response" | sed '$d')
-
-  log "$SCRIPT_NAME" "DEBUG" "HTTP status code: $http_code"
-  log "$SCRIPT_NAME" "DEBUG" "Raw API response: $response"
-
-  if [[ $curl_error -ne 0 ]]; then
-    log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
-    log "$SCRIPT_NAME" "ERROR" "curl output: $response"
-    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
-    return 2
+  # 2. Check if VM is stopped
+  local status
+  status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+  log "$SCRIPT_NAME" "INFO" "VM status after restart: $status"
+  if [[ "$status" != "Stopped" ]]; then
+    # 3. Try stop
+    _harvester_vm_action "stop"
+    log "$SCRIPT_NAME" "INFO" "Waiting 10 seconds after stop..."
+    sleep 10
+    status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+    log "$SCRIPT_NAME" "INFO" "VM status after stop: $status"
+    if [[ "$status" != "Stopped" ]]; then
+      # 4. Try forceStop
+      _harvester_vm_action "forceStop"
+      log "$SCRIPT_NAME" "INFO" "Waiting 10 seconds after forceStop..."
+      sleep 10
+      status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+      log "$SCRIPT_NAME" "INFO" "VM status after forceStop: $status"
+    fi
   fi
 
-  if [[ "$http_code" =~ ^3 ]]; then
-    log "$SCRIPT_NAME" "WARNING" "Received HTTP $http_code (redirect). Check your HARVESTER_URL and ensure it is correct and uses https://"
-  fi
+  # 5. Always try start
+  _harvester_vm_action "start"
+  log "$SCRIPT_NAME" "INFO" "Waiting 10 seconds after start..."
+  sleep 10
 
-  if [[ "$http_code" -ge 400 ]]; then
-    log "$SCRIPT_NAME" "ERROR" "Soft reboot API call returned HTTP $http_code. Response: $response"
-    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
-    return 3
+  # Final status check
+  status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+  log "$SCRIPT_NAME" "INFO" "Final VM status after soft reboot workflow: $status"
+  if [[ "$status" == "Running" ]]; then
+    log "$SCRIPT_NAME" "INFO" "Soft reboot workflow completed successfully for VM '$vm_name'."
+    echo "✅ Soft reboot workflow completed successfully for VM '$vm_name'."
+    return 0
+  else
+    log "$SCRIPT_NAME" "ERROR" "Soft reboot workflow did not result in a running VM. Final status: $status"
+    echo "❌ Soft reboot workflow did not result in a running VM. Final status: $status"
+    return 4
   fi
-
-  if [[ -z "$response" ]]; then
-    log "$SCRIPT_NAME" "WARNING" "API response is empty. The soft reboot may not have been triggered."
-  fi
-
-  if echo "$response" | grep -q '"type":"error"'; then
-    log "$SCRIPT_NAME" "ERROR" "Soft reboot failed for VM '$vm_name'. API error in response: $response"
-    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
-    return 1
-  fi
-
-  log "$SCRIPT_NAME" "INFO" "Soft reboot triggered for VM '$vm_name' (HTTP $http_code)."
-  log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
-  return 0
 }
 
 set_vm_disks_to_sata_and_reboot() {
