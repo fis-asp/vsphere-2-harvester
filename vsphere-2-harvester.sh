@@ -506,7 +506,7 @@ soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
   local namespace="${2:-default}"
-  local url="${HARVESTER_URL}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=softreboot"
+  local url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}?action=softreboot"
   local response
   local http_code
   local curl_error
@@ -515,8 +515,8 @@ soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Soft reboot URL: $url"
   log "$SCRIPT_NAME" "DEBUG" "Using provided CATTLE_ACCESS_KEY (not shown) and CATTLE_SECRET_KEY (not shown)."
 
-  # Perform the API call and capture HTTP status and any curl error
-  response=$(curl -sS -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
+  # Perform the API call, follow redirects, and capture HTTP status and any curl error
+  response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
     -X POST \
     -H 'Accept: application/json' \
     -H 'Content-Type: application/json' \
@@ -532,16 +532,28 @@ soft_reboot_vm_via_api() {
 
   if [[ $curl_error -ne 0 ]]; then
     log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
+    log "$SCRIPT_NAME" "ERROR" "curl output: $response"
+    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
     return 2
+  fi
+
+  if [[ "$http_code" =~ ^3 ]]; then
+    log "$SCRIPT_NAME" "WARNING" "Received HTTP $http_code (redirect). Check your HARVESTER_URL and ensure it is correct and uses https://"
   fi
 
   if [[ "$http_code" -ge 400 ]]; then
     log "$SCRIPT_NAME" "ERROR" "Soft reboot API call returned HTTP $http_code. Response: $response"
+    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
     return 3
+  fi
+
+  if [[ -z "$response" ]]; then
+    log "$SCRIPT_NAME" "WARNING" "API response is empty. The soft reboot may not have been triggered."
   fi
 
   if echo "$response" | grep -q '"type":"error"'; then
     log "$SCRIPT_NAME" "ERROR" "Soft reboot failed for VM '$vm_name'. API error in response: $response"
+    log "$SCRIPT_NAME" "DEBUG" "Exiting soft_reboot_vm_via_api"
     return 1
   fi
 
