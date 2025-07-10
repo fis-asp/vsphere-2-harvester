@@ -23,7 +23,13 @@ import_monitor_status() {
   local import_status=""
 
   while (( waited < max_wait )); do
-    pod_name=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
+    # Robust pod detection
+    pod_name=""
+    for try in {1..5}; do
+      pod_name=$(kubectl get pods -n harvester-system -o name 2>/dev/null | grep harvester-vm-import-controller | cut -d'/' -f2 || true)
+      [[ -n "$pod_name" ]] && break
+      sleep 2
+    done
     if [[ -z "$pod_name" ]]; then
       log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming." "$log_file"
       echo "[IMPORT-CONTROLLER] $(date '+%H:%M:%S') [ERROR]: vm-import-controller pod not found during log streaming."
@@ -32,8 +38,21 @@ import_monitor_status() {
       continue
     fi
 
-    # Only get logs since the function started
-    mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null)
+    # Try to get logs, retry on failure
+    local logs_ok=0
+    for log_try in {1..3}; do
+      mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null) && logs_ok=1 && break
+      sleep 2
+    done
+    if [[ $logs_ok -eq 0 ]]; then
+      log "$SCRIPT_NAME" "WARNING" "Failed to get logs from $pod_name, will retry." "$log_file"
+      echo "[IMPORT-CONTROLLER] $(date '+%H:%M:%S') [WARNING]: Failed to get logs from $pod_name, will retry."
+      sleep 5
+      ((waited++))
+      continue
+    fi
+
+    # Smart tail logic
     local start_index=0
     if [[ -n "$last_line_hash" ]]; then
       for i in "${!lines[@]}"; do
