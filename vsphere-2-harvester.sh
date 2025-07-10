@@ -3,8 +3,8 @@
 ###############################################################################
 # vsphere-2-harvester.sh
 #
-# Migrate VMware vSphere VMs to Harvester using 
-# the vm-import-controller and Harvester API.
+# Enterprise-ready, user-friendly, and auditable migration of VMware vSphere
+# VMs to Harvester using the vm-import-controller and Harvester API.
 #
 # Usage:
 #   ./vsphere-2-harvester.sh [--verbose|-v] [--help|-h]
@@ -101,22 +101,23 @@ prompt_for_var() {
   fi
 }
 
-review_and_adjust_config() {
+adjust_config_menu() {
   while true; do
     clear
-    echo "========== Current Migration Configuration =========="
+    echo "========== Default/Current Migration Configuration =========="
     echo "  1) Harvester API URL:      ${HARVESTER_URL:-}"
     echo "  2) Harvester Access Key:   ${CATTLE_ACCESS_KEY:+********}"
     echo "  3) Harvester Secret Key:   ${CATTLE_SECRET_KEY:+********}"
     echo "  4) vSphere User:           ${VSPHERE_USER:-}"
     echo "  5) vSphere Endpoint:       ${VSPHERE_ENDPOINT:-}"
-    echo "  6) vSphere Datacenter:     ${VSPHERE_DC:-}"
-    echo "  7) Source Network:         ${SRC_NET:-}"
-    echo "  8) Destination Network:    ${DST_NET:-}"
+    echo "  6) vSphere Datacenter:     ${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}"
+    echo "  7) Source Network:         ${SRC_NET:-$DEFAULT_SRC_NET}"
+    echo "  8) Destination Network:    ${DST_NET:-$DEFAULT_DST_NET}"
     echo "  9) VM Name:                ${VM_NAME:-}"
     echo " 10) VM Folder:              ${VM_FOLDER:-}"
-    echo "====================================================="
-    echo "Type the number to adjust, or press Enter to continue:"
+    echo "============================================================"
+    echo "These are the default/currently saved values."
+    echo "Type the number to adjust, or press Enter to continue with these values."
     echo "Enter=Continue, q=Quit"
     read -rp "Choice: " choice
     case "$choice" in
@@ -453,64 +454,8 @@ main() {
     source "$CONFIG_FILE"
   fi
 
-  # Prompt for all required variables (with context, examples, and validation)
-  prompt_for_var "HARVESTER_URL" \
-    "Enter the Harvester API URL. This is the address of your Harvester management interface." \
-    "${HARVESTER_URL:-}" \
-    "https://your-harvester.example.com"
-
-  prompt_for_var "CATTLE_ACCESS_KEY" \
-    "Enter your Harvester API Access Key. You can generate this in the Harvester UI under your user profile > API Keys." \
-    "${CATTLE_ACCESS_KEY:-}" \
-    "token-abc123"
-
-  prompt_for_var "CATTLE_SECRET_KEY" \
-    "Enter your Harvester API Secret Key. This is shown only once when you create the API key in Harvester." \
-    "${CATTLE_SECRET_KEY:-}" \
-    "long-secret-string" 1
-
-  prompt_for_var "VSPHERE_USER" \
-    "Enter your vSphere username. This should be a user with permission to access the VM you want to migrate." \
-    "${VSPHERE_USER:-}" \
-    "administrator@vsphere.local"
-
-  prompt_for_var "VSPHERE_PASS" \
-    "Enter your vSphere password." \
-    "${VSPHERE_PASS:-}" \
-    "" 1
-
-  prompt_for_var "VSPHERE_ENDPOINT" \
-    "Enter your vSphere endpoint. This is the URL to your vCenter's SDK endpoint." \
-    "${VSPHERE_ENDPOINT:-}" \
-    "https://your-vcenter/sdk"
-
-  prompt_for_var "VSPHERE_DC" \
-    "Enter your vSphere datacenter name." \
-    "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" \
-    "ASP"
-
-  prompt_for_var "SRC_NET" \
-    "Enter the source network name as it appears in vSphere." \
-    "${SRC_NET:-$DEFAULT_SRC_NET}" \
-    "RHV-Testing"
-
-  prompt_for_var "DST_NET" \
-    "Enter the destination network name in Harvester (namespace/name format recommended)." \
-    "${DST_NET:-$DEFAULT_DST_NET}" \
-    "default/rhv-testing"
-
-  prompt_for_var "VM_NAME" \
-    "Enter the name of the VM to migrate (as it appears in vSphere)." \
-    "${VM_NAME:-}" \
-    "my-vm-name"
-
-  prompt_for_var "VM_FOLDER" \
-    "Enter the VM folder in vSphere (optional, e.g., /Datacenter/vm/Folder)." \
-    "${VM_FOLDER:-}" \
-    "/Datacenter/vm/Folder"
-
-  # Review and adjust
-  review_and_adjust_config
+  # Show and adjust config at the very start
+  adjust_config_menu
 
   # Save config
   save_config
