@@ -3,7 +3,7 @@
 ###############################################################################
 # vsphere-2-harvester.sh
 #
-# Enterprise-ready, user-friendly, and auditable migration of VMware vSphere
+# Migration of VMware vSphere
 # VMs to Harvester using the vm-import-controller and Harvester API.
 #
 # Usage:
@@ -392,17 +392,17 @@ main() {
   fi
 
   # Prompt for all required variables (with defaults)
-  prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "$HARVESTER_URL"
-  prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "$CATTLE_ACCESS_KEY"
-  prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "$CATTLE_SECRET_KEY" 1
-  prompt_for_var "VSPHERE_USER" "Enter vSphere username" "$VSPHERE_USER"
-  prompt_for_var "VSPHERE_PASS" "Enter vSphere password" "$VSPHERE_PASS" 1
-  prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "$VSPHERE_ENDPOINT"
+  prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "${HARVESTER_URL:-}"
+  prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "${CATTLE_ACCESS_KEY:-}"
+  prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "${CATTLE_SECRET_KEY:-}" 1
+  prompt_for_var "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}"
+  prompt_for_var "VSPHERE_PASS" "Enter vSphere password" "${VSPHERE_PASS:-}" 1
+  prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "${VSPHERE_ENDPOINT:-}"
   prompt_for_var "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}"
   prompt_for_var "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}"
   prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}"
-  prompt_for_var "VM_NAME" "Enter VM name" "$VM_NAME"
-  prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "$VM_FOLDER"
+  prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}"
+  prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}"
 
   # Review and adjust
   review_and_adjust_config
