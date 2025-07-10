@@ -10,6 +10,10 @@ import_monitor_status() {
   echo "Press Ctrl+C to stop viewing logs (import will continue in the background)."
   log "$SCRIPT_NAME" "INFO" "Streaming import controller logs for VM: $vm_name" "$log_file"
 
+  # Get the current time in RFC3339 format
+  local since_time
+  since_time=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
+
   local last_line_hash=""
   local pod_name=""
   while true; do
@@ -21,9 +25,8 @@ import_monitor_status() {
       continue
     fi
 
-    # Get the last 100 lines of logs
-    mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --tail=100 2>/dev/null)
-    # Find the index of the last processed line
+    # Only get logs since the function started
+    mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null)
     local start_index=0
     if [[ -n "$last_line_hash" ]]; then
       for i in "${!lines[@]}"; do
@@ -33,12 +36,10 @@ import_monitor_status() {
         fi
       done
     fi
-    # Output new lines
     for ((i = start_index; i < ${#lines[@]}; i++)); do
       log "IMPORT-CONTROLLER" "INFO" "${lines[$i]}" "$log_file"
       echo "[IMPORT-CONTROLLER] ${lines[$i]}"
     done
-    # Remember the hash of the last line processed
     if [[ ${#lines[@]} -gt 0 ]]; then
       last_line_hash="$(echo "${lines[-1]}" | sha256sum)"
     fi
