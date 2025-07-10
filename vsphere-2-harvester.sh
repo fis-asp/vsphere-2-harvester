@@ -429,7 +429,6 @@ set_vm_disks_to_sata_and_reboot() {
   local namespace="default"
   local max_wait=60
 
-  # Check if VM exists
   if ! kubectl get vm "$vm_name" -n "$namespace" &>/dev/null; then
     log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' does not exist in namespace '$namespace'."
     return 1
@@ -445,9 +444,7 @@ set_vm_disks_to_sata_and_reboot() {
 
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
-  # Get the number of disks
   local disk_names
-  # shellcheck disable=SC2207
   disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}'))
   local disk_count=${#disk_names[@]}
 
@@ -471,22 +468,23 @@ set_vm_disks_to_sata_and_reboot() {
     done
   fi
 
-  # Remove runStrategy if present
+  # Remove runStrategy and set running=false in one patch if runStrategy is present
   local run_strategy
   run_strategy=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.runStrategy}' 2>/dev/null || echo "")
   if [[ -n "$run_strategy" && "$run_strategy" != "null" ]]; then
-    log "$SCRIPT_NAME" "INFO" "Removing runStrategy '$run_strategy' from VM '$vm_name' to allow running field control"
-    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' -p='[{"op": "remove", "path": "/spec/runStrategy"}]'; then
-      log "$SCRIPT_NAME" "ERROR" "Failed to remove runStrategy from VM '$vm_name'."
+    log "$SCRIPT_NAME" "INFO" "Removing runStrategy '$run_strategy' and setting running=false for VM '$vm_name'"
+    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
+      -p='[{"op": "remove", "path": "/spec/runStrategy"}, {"op": "add", "path": "/spec/running", "value": false}]'; then
+      log "$SCRIPT_NAME" "ERROR" "Failed to remove runStrategy and set running=false for VM '$vm_name'."
       return 3
     fi
-  fi
-
-  # Reboot the VM (stop, wait, start)
-  log "$SCRIPT_NAME" "INFO" "Rebooting VM '$vm_name' to apply disk bus changes"
-  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'; then
-    log "$SCRIPT_NAME" "ERROR" "Failed to stop VM '$vm_name'."
-    return 4
+  else
+    # If runStrategy is not present, just set running=false
+    log "$SCRIPT_NAME" "INFO" "Setting running=false for VM '$vm_name'"
+    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'; then
+      log "$SCRIPT_NAME" "ERROR" "Failed to stop VM '$vm_name'."
+      return 4
+    fi
   fi
 
   # Wait for the VM to stop
@@ -506,6 +504,8 @@ set_vm_disks_to_sata_and_reboot() {
     sleep 2
   done
 
+  # Start the VM
+  log "$SCRIPT_NAME" "INFO" "Setting running=true for VM '$vm_name'"
   if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'; then
     log "$SCRIPT_NAME" "ERROR" "Failed to start VM '$vm_name'."
     return 6
