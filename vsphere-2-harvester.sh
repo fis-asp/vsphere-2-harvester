@@ -482,7 +482,7 @@ set_vm_disks_to_sata_and_reboot() {
   else
     # If runStrategy is not present, just set running=false
     log "$SCRIPT_NAME" "INFO" "Setting running=false for VM '$vm_name'"
-    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'; then
+    if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"runStrategy": false}}'; then
       log "$SCRIPT_NAME" "ERROR" "Failed to stop VM '$vm_name'."
       return 4
     fi
@@ -507,7 +507,7 @@ set_vm_disks_to_sata_and_reboot() {
 
   # Start the VM
   log "$SCRIPT_NAME" "INFO" "Setting running=true for VM '$vm_name'"
-  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'; then
+  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"runStrategy": true}}'; then
     log "$SCRIPT_NAME" "ERROR" "Failed to start VM '$vm_name'."
     return 6
   fi
