@@ -1,6 +1,5 @@
-#!/bin/bash
-
 import_monitor_status() {
+  set +e  # Disable 'exit on error' for this function
   local vm_name="$1"
   local log_file="${2:-/var/log/vsphere-2-harvester/${vm_name}.log}"
   local namespace="default"
@@ -13,7 +12,6 @@ import_monitor_status() {
   echo "Press Ctrl+C to stop viewing logs (import will continue in the background)."
   log "$SCRIPT_NAME" "INFO" "Streaming import controller logs for VM: $vm_name" "$log_file"
 
-  # Get the current time in RFC3339 format
   local since_time
   since_time=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
 
@@ -23,7 +21,6 @@ import_monitor_status() {
   local import_status=""
 
   while (( waited < max_wait )); do
-    # Robust pod detection
     pod_name=""
     for try in {1..5}; do
       pod_name=$(kubectl get pods -n harvester-system -o name 2>/dev/null | grep harvester-vm-import-controller | cut -d'/' -f2 || true)
@@ -38,7 +35,6 @@ import_monitor_status() {
       continue
     fi
 
-    # Try to get logs, retry on failure
     local logs_ok=0
     for log_try in {1..3}; do
       mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null) && logs_ok=1 && break
@@ -52,7 +48,6 @@ import_monitor_status() {
       continue
     fi
 
-    # Smart tail logic
     local start_index=0
     if [[ -n "$last_line_hash" ]]; then
       for i in "${!lines[@]}"; do
@@ -70,7 +65,6 @@ import_monitor_status() {
       last_line_hash="$(echo "${lines[-1]}" | sha256sum)"
     fi
 
-    # Check import status
     import_status=$(kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
     if [[ "$import_status" == "virtualMachineRunning" ]]; then
       log "$SCRIPT_NAME" "INFO" "Import successful! VM is running." "$log_file"
@@ -92,8 +86,12 @@ import_monitor_status() {
     log "$SCRIPT_NAME" "INFO" "Full resource details:" "$log_file"
     kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$log_file"
     echo -e "\n❌ ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
+    set -e
+    return 1
   fi
 
   log "$SCRIPT_NAME" "INFO" "Import monitoring completed for VM: $vm_name" "$log_file"
   echo -e "\nImport monitoring completed for VM: $vm_name"
+  set -e
+  return 0
 }
