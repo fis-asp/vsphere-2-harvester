@@ -3,10 +3,13 @@
 import_monitor_status() {
   local vm_name="$1"
   local log_file="${2:-/var/log/vsphere-2-harvester/${vm_name}.log}"
+  local namespace="default"
+  local max_wait=60
 
   echo
   echo "========== Import Monitor =========="
   echo "Streaming logs from the import controller for VM: $vm_name"
+  echo "This will stop automatically when the import is finished."
   echo "Press Ctrl+C to stop viewing logs (import will continue in the background)."
   log "$SCRIPT_NAME" "INFO" "Streaming import controller logs for VM: $vm_name" "$log_file"
 
@@ -16,12 +19,16 @@ import_monitor_status() {
 
   local last_line_hash=""
   local pod_name=""
-  while true; do
+  local waited=0
+  local import_status=""
+
+  while (( waited < max_wait )); do
     pod_name=$(kubectl get pods -n harvester-system -o name | grep harvester-vm-import-controller | cut -d'/' -f2)
     if [[ -z "$pod_name" ]]; then
       log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming." "$log_file"
       echo "[IMPORT-CONTROLLER] $(date '+%H:%M:%S') [ERROR]: vm-import-controller pod not found during log streaming."
       sleep 5
+      ((waited++))
       continue
     fi
 
@@ -43,6 +50,31 @@ import_monitor_status() {
     if [[ ${#lines[@]} -gt 0 ]]; then
       last_line_hash="$(echo "${lines[-1]}" | sha256sum)"
     fi
+
+    # Check import status
+    import_status=$(kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
+    if [[ "$import_status" == "virtualMachineRunning" ]]; then
+      log "$SCRIPT_NAME" "INFO" "Import successful! VM is running." "$log_file"
+      echo
+      echo "✅ Import successful! VM '$vm_name' is running."
+      break
+    elif [[ "$import_status" == "notfound" ]]; then
+      log "$SCRIPT_NAME" "WARNING" "VirtualMachineImport not found yet, waiting..." "$log_file"
+    else
+      log "$SCRIPT_NAME" "INFO" "Current import status: $import_status, waiting..." "$log_file"
+    fi
+
     sleep 5
+    ((waited++))
   done
+
+  if [[ "$import_status" != "virtualMachineRunning" ]]; then
+    log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs." "$log_file"
+    log "$SCRIPT_NAME" "INFO" "Full resource details:" "$log_file"
+    kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$log_file"
+    echo -e "\n❌ ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Import monitoring completed for VM: $vm_name" "$log_file"
+  echo -e "\nImport monitoring completed for VM: $vm_name"
 }
