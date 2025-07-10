@@ -102,6 +102,7 @@ prompt_for_var() {
 }
 
 adjust_config_menu() {
+  USER_ABORTED=0
   while true; do
     clear
     echo "========== Default/Current Migration Configuration =========="
@@ -131,7 +132,8 @@ adjust_config_menu() {
       8) prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}" "default/rhv-testing" ;;
       9) prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}" "my-vm-name" ;;
       10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}" "/Datacenter/vm/Folder" ;;
-      ""|[Qq]) break ;;
+      [Qq]) USER_ABORTED=1; break ;;
+      "") break ;;
       *) echo "Invalid choice. Try again."; sleep 1 ;;
     esac
   done
@@ -456,6 +458,11 @@ main() {
 
   # Show and adjust config at the very start
   adjust_config_menu
+  if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
+    echo "Migration aborted by user."
+    log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
+    exit 0
+  fi
 
   # Save config
   save_config
