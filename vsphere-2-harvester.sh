@@ -448,7 +448,6 @@ set_vm_disks_to_sata_and_reboot() {
   fi
 
   for ((i=0; i<disk_count; i++)); do
-    # Check current bus type
     current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}")
     disk_name=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].name}")
     if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
@@ -460,11 +459,21 @@ set_vm_disks_to_sata_and_reboot() {
     fi
   done
 
-  # Reboot the VM (stop, then start)
+  # Reboot the VM (stop, wait, start)
   log "$SCRIPT_NAME" "INFO" "Rebooting VM '$vm_name' to apply disk bus changes"
-  kubectl virt stop "$vm_name" -n "$namespace"
-  sleep 5
-  kubectl virt start "$vm_name" -n "$namespace"
+  kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": false}}'
+
+  # Wait for the VM to stop
+  for i in {1..30}; do
+    status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' to stop (current status: $status)"
+    if [[ "$status" == "Stopped" ]]; then
+      break
+    fi
+    sleep 2
+  done
+
+  kubectl patch vm "$vm_name" -n "$namespace" --type='merge' -p '{"spec": {"running": true}}'
   log "$SCRIPT_NAME" "INFO" "VM '$vm_name' rebooted successfully"
   log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
 }
