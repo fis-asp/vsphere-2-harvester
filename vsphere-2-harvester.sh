@@ -294,7 +294,7 @@ soft_reboot_vm_via_api() {
   _harvester_vm_action() {
     local action="$1"
     local url="${base_url}?action=${action}"
-    echo "➡️  Sending API action '$action' to VM '$vm_name'..."
+    echo "Sending API action '$action' to VM '$vm_name'..."
     log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
     log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
     response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
@@ -310,29 +310,29 @@ soft_reboot_vm_via_api() {
     if [[ $curl_error -ne 0 ]]; then
       log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
       log "$SCRIPT_NAME" "ERROR" "curl output: $response"
-      echo "❌ curl error for action '$action'."
+      echo "curl error for action '$action'."
       return 2
     fi
     if [[ "$http_code" =~ ^3 ]]; then
       log "$SCRIPT_NAME" "WARNING" "Received HTTP $http_code (redirect). Check your HARVESTER_URL and ensure it is correct and uses https://"
-      echo "⚠️  HTTP $http_code (redirect) for action '$action'."
+      echo "HTTP $http_code (redirect) for action '$action'."
     fi
     if [[ "$http_code" -ge 400 ]]; then
       log "$SCRIPT_NAME" "ERROR" "API call '$action' returned HTTP $http_code. Response: $response"
-      echo "❌ API call '$action' returned HTTP $http_code."
+      echo "API call '$action' returned HTTP $http_code."
       return 3
     fi
     if [[ -z "$response" ]]; then
       log "$SCRIPT_NAME" "WARNING" "API response is empty for action '$action'."
-      echo "⚠️  API response is empty for action '$action'."
+      echo "API response is empty for action '$action'."
     fi
     if echo "$response" | grep -q '"type":"error"'; then
       log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error in response: $response"
-      echo "❌ API error for action '$action'."
+      echo "API error for action '$action'."
       return 1
     fi
     log "$SCRIPT_NAME" "INFO" "API action '$action' triggered for VM '$vm_name' (HTTP $http_code)."
-    echo "✅ API action '$action' sent."
+    echo "API action '$action' sent."
     return 0
   }
 
@@ -345,36 +345,36 @@ soft_reboot_vm_via_api() {
       status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
       log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' status: $status (want: $desired)"
       if [[ "$status" == "$desired" ]]; then
-        echo "✅ VM status is now: $status"
+        echo "VM status is now: $status"
         return 0
       fi
       sleep 2
     done
-    echo "❌ Timeout waiting for VM status '$desired'. Last status: $status"
+    echo "Timeout waiting for VM status '$desired'. Last status: $status"
     return 1
   }
 
   echo
-  echo "➡️  Soft reboot workflow for VM '$vm_name':"
-  echo "   1. Try 'restart' via API"
-  echo "   2. If not stopped, try 'stop'"
-  echo "   3. If still not stopped, try 'forceStop'"
-  echo "   4. Always 'start' at the end"
+  echo "Soft reboot workflow for VM '$vm_name':"
+  echo "  1. Try 'restart' via API"
+  echo "  2. If not stopped, try 'stop'"
+  echo "  3. If still not stopped, try 'forceStop'"
+  echo "  4. Always 'start' at the end"
   echo
 
   # 1. Try restart
   _harvester_vm_action "restart"
-  echo "⏳ Waiting 10 seconds after restart..."
+  echo "Waiting 10 seconds after restart..."
   sleep 10
 
   # 2. Wait for Stopped, else try stop
   if ! _wait_for_status "Stopped" 5; then
     _harvester_vm_action "stop"
-    echo "⏳ Waiting 10 seconds after stop..."
+    echo "Waiting 10 seconds after stop..."
     sleep 10
     if ! _wait_for_status "Stopped" 5; then
       _harvester_vm_action "forceStop"
-      echo "⏳ Waiting 10 seconds after forceStop..."
+      echo "Waiting 10 seconds after forceStop..."
       sleep 10
       _wait_for_status "Stopped" 5
     fi
@@ -382,16 +382,55 @@ soft_reboot_vm_via_api() {
 
   # 3. Always try start
   _harvester_vm_action "start"
-  echo "⏳ Waiting for VM to be Running..."
+  echo "Waiting for VM to be Running..."
   if _wait_for_status "Running" 15; then
     log "$SCRIPT_NAME" "INFO" "Soft reboot workflow completed successfully for VM '$vm_name'."
-    echo "✅ Soft reboot workflow completed successfully for VM '$vm_name'."
+    echo "Soft reboot workflow completed successfully for VM '$vm_name'."
     return 0
   else
     log "$SCRIPT_NAME" "ERROR" "Soft reboot workflow did not result in a running VM."
-    echo "❌ Soft reboot workflow did not result in a running VM."
+    echo "Soft reboot workflow did not result in a running VM."
     return 4
   fi
+}
+
+switch_vm_disks_to_sata() {
+  local vm_name="$1"
+  local namespace="${2:-default}"
+  local disk_names disk_count i disk_name current_bus
+
+  echo "Switching all disks of VM '$vm_name' to use the SATA bus (if needed)..."
+  log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
+
+  disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
+  disk_count=${#disk_names[@]}
+
+  if [[ "$disk_count" -eq 0 ]]; then
+    log "$SCRIPT_NAME" "WARNING" "No disks found for VM '$vm_name'. Skipping SATA patch."
+    echo "No disks found for VM. Skipping SATA patch."
+    return 0
+  fi
+
+  for ((i=0; i<disk_count; i++)); do
+    disk_name="${disk_names[$i]}"
+    current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}" 2>/dev/null || echo "")
+    if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
+      echo "  - Patching disk '$disk_name' (was: $current_bus) to SATA..."
+      log "$SCRIPT_NAME" "INFO" "Patching disk '$disk_name' (index $i) to use bus: sata (was: $current_bus)"
+      if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
+        -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"; then
+        log "$SCRIPT_NAME" "ERROR" "Failed to patch disk '$disk_name' (index $i) to bus: sata"
+        echo "ERROR: Failed to patch disk $disk_name to bus: sata"
+        return 2
+      fi
+      echo "  Disk $disk_name patched to SATA."
+    else
+      echo "  - Disk $disk_name already uses SATA."
+      log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
+    fi
+  done
+  echo "All disks checked and set to SATA where needed."
+  return 0
 }
 
 # --- Main Workflow ---
@@ -438,6 +477,7 @@ main() {
   import_monitor_status "$VM_NAME"
 
   # Step 7: Post-import actions
+  switch_vm_disks_to_sata "$VM_NAME"
   soft_reboot_vm_via_api "$VM_NAME"
 
   echo
