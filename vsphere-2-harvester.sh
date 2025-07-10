@@ -64,6 +64,33 @@ log() {
   echo "[$label] $timestamp [$level]: $message" | tee -a "$log_file" >/dev/null || true
 }
 
+setup_log_rotation() {
+  local logrotate_config="/etc/logrotate.d/vsphere-2-harvester"
+  local log_dir="$LOG_DIR"
+
+  log "$SCRIPT_NAME" "DEBUG" "Checking logrotate configuration for $log_dir"
+
+  if [[ ! -f "$logrotate_config" ]]; then
+    echo "Setting up logrotate for $log_dir (requires sudo)..."
+    sudo tee "$logrotate_config" >/dev/null <<EOF
+$log_dir/*.log {
+    daily
+    rotate 14
+    compress
+    missingok
+    notifempty
+    create 0640 root root
+    dateext
+    maxage 30
+}
+EOF
+    log "$SCRIPT_NAME" "INFO" "Logrotate configuration created at $logrotate_config"
+    echo "Logrotate configuration created at $logrotate_config"
+  else
+    log "$SCRIPT_NAME" "INFO" "Logrotate configuration already exists at $logrotate_config"
+  fi
+}
+
 # --- UX Helper Functions ---
 
 prompt_for_var() {
@@ -460,6 +487,7 @@ main() {
 
   # Step 1: Prerequisite check
   check_prerequisites
+  setup_log_rotation
 
   # Step 2: Create vSphere secret
   create_vsphere_secret
