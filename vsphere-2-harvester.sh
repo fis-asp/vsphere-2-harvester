@@ -445,6 +445,7 @@ set_vm_disks_to_sata_and_reboot() {
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
   local disk_names
+  # shellcheck disable=SC2207
   disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}'))
   local disk_count=${#disk_names[@]}
 
@@ -532,6 +533,7 @@ set_vm_disks_to_sata_and_reboot() {
   log "$SCRIPT_NAME" "DEBUG" "Exiting set_vm_disks_to_sata_and_reboot"
   return 0
 }
+
 
 # --- 6. Main Script ----------------------------------------------------------
 
