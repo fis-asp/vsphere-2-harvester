@@ -26,6 +26,7 @@ source ./import_monitor.sh
 DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
+DEFAULT_NAMESPACE="har-fasp-02"
 
 show_help() {
   cat <<EOF
@@ -146,6 +147,7 @@ adjust_config_menu() {
     echo "  8) Destination Network:    ${DST_NET:-$DEFAULT_DST_NET}"
     echo "  9) VM Name:                ${VM_NAME:-}"
     echo " 10) VM Folder:              ${VM_FOLDER:-}"
+    echo " 11) Namespace:             ${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
     echo "============================================================"
     echo "These are the default/currently saved values."
     echo "Type the number to adjust, or press Enter to continue with these values."
@@ -162,6 +164,7 @@ adjust_config_menu() {
       8) prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}" "default/rhv-testing" ;;
       9) prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}" "my-vm-name" ;;
       10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}" "/Datacenter/vm/Folder" ;;
+      11) prompt_for_var "HARVESTER_NAMESPACE" "Enter Harvester namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" "default" ;;
       [Qq]) USER_ABORTED=1; break ;;
       "") break ;;
       *) echo "Invalid choice. Try again."; sleep 1 ;;
@@ -182,6 +185,7 @@ CATTLE_SECRET_KEY="$CATTLE_SECRET_KEY"
 HARVESTER_URL="$HARVESTER_URL"
 VM_NAME="$VM_NAME"
 VM_FOLDER="$VM_FOLDER"
+HARVESTER_NAMESPACE="$HARVESTER_NAMESPACE"
 EOF
   chmod 600 "$CONFIG_FILE"
   log "$SCRIPT_NAME" "INFO" "Configuration saved to $CONFIG_FILE"
@@ -211,11 +215,11 @@ create_vsphere_secret() {
   echo "We will now create a Kubernetes secret in Harvester to store your vSphere credentials."
   echo "This allows Harvester to connect to your vSphere environment securely."
   log "$SCRIPT_NAME" "INFO" "Ensuring vSphere credentials secret exists in Harvester..."
-  if ! kubectl get secret vsphere-credentials -n default &>/dev/null; then
+  if ! kubectl get secret vsphere-credentials -n "$HARVESTER_NAMESPACE" &>/dev/null; then
     kubectl create secret generic vsphere-credentials \
       --from-literal=username="$VSPHERE_USER" \
       --from-literal=password="$VSPHERE_PASS" \
-      -n default
+      -n "$HARVESTER_NAMESPACE"
     log "$SCRIPT_NAME" "INFO" "Secret 'vsphere-credentials' created."
     echo "Success: vSphere secret created."
   else
@@ -230,19 +234,19 @@ create_vmware_source() {
   echo "We will now create or validate the VmwareSource resource in Harvester."
   echo "This connects Harvester to your vSphere environment."
   log "$SCRIPT_NAME" "INFO" "Ensuring VmwareSource resource exists..."
-  if ! kubectl get vmwaresource.migration vcsim -n default &>/dev/null; then
+  if ! kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" &>/dev/null; then
     cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VmwareSource
 metadata:
   name: vcsim
-  namespace: default
+  namespace: $HARVESTER_NAMESPACE
 spec:
   endpoint: "$VSPHERE_ENDPOINT"
   dc: "$VSPHERE_DC"
   credentials:
     name: vsphere-credentials
-    namespace: default
+    namespace: $HARVESTER_NAMESPACE
 EOF
     log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' created."
     echo "Success: VmwareSource created."
@@ -258,7 +262,7 @@ wait_for_vmware_source_ready() {
   echo "Waiting for VmwareSource to be ready (this may take a minute)..."
   log "$SCRIPT_NAME" "INFO" "Waiting for VmwareSource to be ready..."
   for i in {1..20}; do
-    STATUS=$(kubectl get vmwaresource.migration vcsim -n default -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
+    STATUS=$(kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
     log "$SCRIPT_NAME" "DEBUG" "VmwareSource status: $STATUS"
     if [[ "$STATUS" == "clusterReady" ]]; then
       log "$SCRIPT_NAME" "INFO" "VmwareSource is ready."
@@ -272,7 +276,7 @@ wait_for_vmware_source_ready() {
     sleep 5
   done
   log "$SCRIPT_NAME" "ERROR" "VmwareSource did not become ready. Check your configuration."
-  kubectl get vmwaresource.migration vcsim -n default -o yaml | tee -a "$GENERAL_LOG_FILE"
+  kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" -o yaml | tee -a "$GENERAL_LOG_FILE"
   echo "ERROR: VmwareSource did not become ready. Please check your configuration and try again."
   exit 20
 }
@@ -283,13 +287,13 @@ create_virtual_machine_import() {
   echo "We will now create the VirtualMachineImport resource in Harvester."
   echo "This starts the migration of your VM from vSphere to Harvester."
   log "$SCRIPT_NAME" "INFO" "Ensuring VirtualMachineImport resource exists for VM: $VM_NAME"
-  if ! kubectl get virtualmachineimport.migration "$VM_NAME" -n default &>/dev/null; then
-    cat <<EOF | kubectl apply -f -
+  if ! kubectl get virtualmachineimport.migration "$VM_NAME" -n "$HARVESTER_NAMESPACE" &>/dev/null; then
+  cat <<EOF | kubectl apply -f -
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VirtualMachineImport
 metadata:
   name: $VM_NAME
-  namespace: default
+  namespace: $HARVESTER_NAMESPACE
 spec:
   virtualMachineName: "$VM_NAME"
   $( [[ -n "$VM_FOLDER" ]] && echo "folder: \"$VM_FOLDER\"" )
@@ -298,7 +302,7 @@ spec:
       destinationNetwork: "$DST_NET"
   sourceCluster:
     name: vcsim
-    namespace: default
+    namespace: $HARVESTER_NAMESPACE
     kind: VmwareSource
     apiVersion: migration.harvesterhci.io/v1beta1
 EOF
@@ -313,9 +317,8 @@ EOF
 soft_reboot_vm_via_api() {
   log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
   local vm_name="$1"
-  local namespace="${2:-default}"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
   local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
-  local response http_code curl_error
 
   # Helper to call the API with a given action
   _harvester_vm_action() {
@@ -423,7 +426,7 @@ soft_reboot_vm_via_api() {
 
 switch_vm_disks_to_sata() {
   local vm_name="$1"
-  local namespace="${2:-default}"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
   local disk_names disk_count i disk_name current_bus
 
   echo "Switching all disks of VM '$vm_name' to use the SATA bus (if needed)..."
@@ -503,11 +506,11 @@ main() {
   create_virtual_machine_import
 
   # Step 6: Monitor import status
-  import_monitor_status "$VM_NAME"
+  import_monitor_status "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   # Step 7: Post-import actions
-  switch_vm_disks_to_sata "$VM_NAME"
-  soft_reboot_vm_via_api "$VM_NAME"
+  switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
+  soft_reboot_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
   echo "========== Migration workflow complete! =========="

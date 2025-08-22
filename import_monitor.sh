@@ -1,8 +1,8 @@
 import_monitor_status() {
   set +e  # Disable 'exit on error' for this function
   local vm_name="$1"
-  local log_file="${2:-/var/log/vsphere-2-harvester/${vm_name}.log}"
-  local namespace="default"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"   # <--- NEW: use passed namespace or fallback
+  local log_file="${3:-/var/log/vsphere-2-harvester/${vm_name}.log}"
   local max_wait=600
 
   echo
