@@ -28,6 +28,9 @@ DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
 DEFAULT_NAMESPACE="har-fasp-02"
 
+# Ensure namespace variable is always defined
+HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
+
 show_help() {
   cat <<EOF
 $SCRIPT_NAME
