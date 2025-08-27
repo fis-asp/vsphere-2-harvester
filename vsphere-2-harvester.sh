@@ -207,7 +207,10 @@ send_harvester_vm_action() {
   local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
   local url="${base_url}?action=${action}"
   local response http_code curl_error
+  local action_sleeptime="2"
 
+  log "$SCRIPT_NAME" "INFO" "Waiting a ${action_sleeptime} seconds before Sending API Action"
+  sleep "$action_sleeptime"
   echo "  - Sending API action '$action' to VM '$vm_name'..."
   log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
   log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
