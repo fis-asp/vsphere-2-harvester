@@ -197,6 +197,78 @@ EOF
   log "$SCRIPT_NAME" "INFO" "Configuration saved to $CONFIG_FILE"
 }
 
+# --- Shared VM Action Helper Functions ---
+
+# Sends a specific action (e.g., stop, start) to a VM via the Harvester API
+send_harvester_vm_action() {
+  local action="$1"
+  local vm_name="$2"
+  local namespace="${3:-$HARVESTER_NAMESPACE}"
+  local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
+  local url="${base_url}?action=${action}"
+  local response http_code curl_error
+
+  echo "  - Sending API action '$action' to VM '$vm_name'..."
+  log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
+  log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
+
+  response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
+    -X POST \
+    -H 'Accept: application/json' \
+    -H 'Content-Type: application/json' \
+    "$url" 2>&1)
+  curl_error=$?
+  http_code=$(echo "$response" | tail -n1)
+  response=$(echo "$response" | sed '$d')
+
+  log "$SCRIPT_NAME" "DEBUG" "HTTP status code: $http_code"
+  log "$SCRIPT_NAME" "DEBUG" "Raw API response: $response"
+
+  if [[ $curl_error -ne 0 ]]; then
+    log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error: $response"
+    echo "    ERROR: curl command failed for action '$action'."
+    return 2
+  fi
+  if [[ "$http_code" -ge 400 ]]; then
+    log "$SCRIPT_NAME" "ERROR" "API call '$action' returned HTTP $http_code. Response: $response"
+    echo "    ERROR: API call '$action' returned HTTP $http_code."
+    return 3
+  fi
+  if echo "$response" | grep -q '"type":"error"'; then
+    log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error in response: $response"
+    echo "    ERROR: API reported an error for action '$action'."
+    return 1
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "API action '$action' triggered for VM '$vm_name' (HTTP $http_code)."
+  echo "    Action '$action' sent successfully."
+  return 0
+}
+
+# Waits for a VM to reach a desired status (e.g., Running, Stopped)
+wait_for_vm_status() {
+  local desired_status="$1"
+  local vm_name="$2"
+  local namespace="${3:-$HARVESTER_NAMESPACE}"
+  local timeout="${4:-60}" # Increased timeout for stopping
+  local current_status
+
+  echo "  - Waiting for VM '$vm_name' to enter '$desired_status' state (timeout: ${timeout}s)..."
+  for ((i=0; i<timeout; i+=2)); do
+    current_status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
+    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' status: $current_status (want: $desired_status)"
+    if [[ "$current_status" == "$desired_status" ]]; then
+      echo "    Success: VM status is now '$current_status'."
+      return 0
+    fi
+    sleep 2
+  done
+
+  echo "    ERROR: Timeout waiting for VM status '$desired_status'. Last known status: '$current_status'."
+  log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM status '$desired_status'. Last status: $current_status"
+  return 1
+}
+
 # --- Technical Functions (with context and logging) ---
 
 check_prerequisites() {
@@ -320,113 +392,28 @@ EOF
   fi
 }
 
-soft_reboot_vm_via_api() {
-  log "$SCRIPT_NAME" "DEBUG" "Entering soft_reboot_vm_via_api"
+start_vm_via_api() {
   local vm_name="$1"
   local namespace="${2:-$HARVESTER_NAMESPACE}"
-  local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
 
-  # Helper to call the API with a given action
-  _harvester_vm_action() {
-    local action="$1"
-    local url="${base_url}?action=${action}"
-    echo "Sending API action '$action' to VM '$vm_name'..."
-    log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
-    log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
-    response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
-      -X POST \
-      -H 'Accept: application/json' \
-      -H 'Content-Type: application/json' \
-      "$url" 2>&1)
-    curl_error=$?
-    http_code=$(echo "$response" | tail -n1)
-    response=$(echo "$response" | sed '$d')
-    log "$SCRIPT_NAME" "DEBUG" "HTTP status code: $http_code"
-    log "$SCRIPT_NAME" "DEBUG" "Raw API response: $response"
-    if [[ $curl_error -ne 0 ]]; then
-      log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error"
-      log "$SCRIPT_NAME" "ERROR" "curl output: $response"
-      echo "curl error for action '$action'."
-      return 2
-    fi
-    if [[ "$http_code" =~ ^3 ]]; then
-      log "$SCRIPT_NAME" "WARNING" "Received HTTP $http_code (redirect). Check your HARVESTER_URL and ensure it is correct and uses https://"
-      echo "HTTP $http_code (redirect) for action '$action'."
-    fi
-    if [[ "$http_code" -ge 400 ]]; then
-      log "$SCRIPT_NAME" "ERROR" "API call '$action' returned HTTP $http_code. Response: $response"
-      echo "API call '$action' returned HTTP $http_code."
-      return 3
-    fi
-    if [[ -z "$response" ]]; then
-      log "$SCRIPT_NAME" "WARNING" "API response is empty for action '$action'."
-      echo "API response is empty for action '$action'."
-    fi
-    if echo "$response" | grep -q '"type":"error"'; then
-      log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error in response: $response"
-      echo "API error for action '$action'."
-      return 1
-    fi
-    log "$SCRIPT_NAME" "INFO" "API action '$action' triggered for VM '$vm_name' (HTTP $http_code)."
-    echo "API action '$action' sent."
-    return 0
-  }
+  echo
+  echo "========== Starting VM Post-Configuration =========="
+  log "$SCRIPT_NAME" "INFO" "Starting VM '$vm_name' after post-migration adjustments."
 
-  # Helper to poll VM status
-  _wait_for_status() {
-    local desired="$1"
-    local timeout="${2:-30}"
-    local status
-    for ((i=0; i<timeout; i++)); do
-      status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
-      log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' status: $status (want: $desired)"
-      if [[ "$status" == "$desired" ]]; then
-        echo "VM status is now: $status"
-        return 0
-      fi
-      sleep 2
-    done
-    echo "Timeout waiting for VM status '$desired'. Last status: $status"
+  if ! send_harvester_vm_action "start" "$vm_name" "$namespace"; then
+    log "$SCRIPT_NAME" "ERROR" "Failed to send start command for VM '$vm_name'."
+    echo "ERROR: Failed to start the VM via API."
     return 1
-  }
-
-  echo
-  echo "Soft reboot workflow for VM '$vm_name':"
-  echo "  1. Try 'restart' via API"
-  echo "  2. If not stopped, try 'stop'"
-  echo "  3. If still not stopped, try 'forceStop'"
-  echo "  4. Always 'start' at the end"
-  echo
-
-  # 1. Try restart
-  _harvester_vm_action "restart"
-  echo "Waiting 10 seconds after restart..."
-  sleep 10
-
-  # 2. Wait for Stopped, else try stop
-  if ! _wait_for_status "Stopped" 5; then
-    _harvester_vm_action "stop"
-    echo "Waiting 10 seconds after stop..."
-    sleep 10
-    if ! _wait_for_status "Stopped" 5; then
-      _harvester_vm_action "forceStop"
-      echo "Waiting 10 seconds after forceStop..."
-      sleep 10
-      _wait_for_status "Stopped" 5
-    fi
   fi
 
-  # 3. Always try start
-  _harvester_vm_action "start"
-  echo "Waiting for VM to be Running..."
-  if _wait_for_status "Running" 15; then
-    log "$SCRIPT_NAME" "INFO" "Soft reboot workflow completed successfully for VM '$vm_name'."
-    echo "Soft reboot workflow completed successfully for VM '$vm_name'."
+  if wait_for_vm_status "Running" "$vm_name" "$namespace" 90; then
+    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' started successfully."
+    echo "VM started successfully and is now Running."
     return 0
   else
-    log "$SCRIPT_NAME" "ERROR" "Soft reboot workflow did not result in a running VM."
-    echo "Soft reboot workflow did not result in a running VM."
-    return 4
+    log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' did not reach 'Running' state after start command."
+    echo "ERROR: VM did not become Running. Please check the Harvester UI."
+    return 1
   fi
 }
 
@@ -481,27 +468,21 @@ ensure_vm_stopped() {
 
   if [[ "$status" == "Running" ]]; then
     log "$SCRIPT_NAME" "INFO" "VM is running. Attempting to stop it."
-    echo "  - VM is running. Sending stop command..."
-    if ! kubectl stop vm "$vm_name" -n "$namespace"; then
-      log "$SCRIPT_NAME" "ERROR" "Failed to send stop command to VM '$vm_name'."
-      echo "  ERROR: Failed to stop VM. Aborting CPU adjustment."
+    if ! send_harvester_vm_action "stop" "$vm_name" "$namespace"; then
+      echo "  ERROR: Failed to send stop command. Aborting CPU adjustment."
       return 1
     fi
 
-    echo "  - Waiting for VM to stop..."
-    for i in {1..30}; do
-      status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "NotFound")
-      if [[ "$status" == "Stopped" ]]; then
-        log "$SCRIPT_NAME" "INFO" "VM '$vm_name' is now stopped."
-        echo "  Success: VM is stopped."
-        return 0
+    if ! wait_for_vm_status "Stopped" "$vm_name" "$namespace"; then
+      log "$SCRIPT_NAME" "WARNING" "Graceful stop failed or timed out. Attempting forceStop."
+      echo "  - Graceful stop failed. Trying forceStop..."
+      if ! send_harvester_vm_action "forceStop" "$vm_name" "$namespace" || \
+         ! wait_for_vm_status "Stopped" "$vm_name" "$namespace"; then
+        echo "  ERROR: Failed to stop VM even with forceStop. Aborting CPU adjustment."
+        return 1
       fi
-      sleep 2
-    done
-
-    log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop. Last status: $status"
-    echo "  ERROR: Timeout waiting for VM to stop. Aborting CPU adjustment."
-    return 1
+    fi
+    return 0
   elif [[ "$status" == "Stopped" ]]; then
     log "$SCRIPT_NAME" "INFO" "VM '$vm_name' is already stopped."
     echo "  - VM is already stopped. Proceeding."
@@ -613,7 +594,7 @@ main() {
   # Step 7: Post-import actions
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
-  soft_reboot_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
+  start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
   echo "========== Migration workflow complete! =========="
