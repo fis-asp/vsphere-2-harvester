@@ -27,6 +27,7 @@ DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
 DEFAULT_NAMESPACE="har-fasp-02"
+POST_MIGRATE_SOCKETS="2"
 
 # Ensure namespace variable is always defined
 HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
@@ -168,6 +169,7 @@ adjust_config_menu() {
       9) prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}" "my-vm-name" ;;
       10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}" "/Datacenter/vm/Folder" ;;
       11) prompt_for_var "HARVESTER_NAMESPACE" "Enter Harvester namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" "default" ;;
+      12) prompt_for_var "POST_MIGRATE_SOCKETS" "Enter desired socket count (optional)" "${POST_MIGRATE_SOCKETS:-}" "2" ;;
       [Qq]) USER_ABORTED=1; break ;;
       "") break ;;
       *) echo "Invalid choice. Try again."; sleep 1 ;;
@@ -189,6 +191,7 @@ HARVESTER_URL="$HARVESTER_URL"
 VM_NAME="$VM_NAME"
 VM_FOLDER="$VM_FOLDER"
 HARVESTER_NAMESPACE="$HARVESTER_NAMESPACE"
+POST_MIGRATE_SOCKETS="$POST_MIGRATE_SOCKETS"
 EOF
   chmod 600 "$CONFIG_FILE"
   log "$SCRIPT_NAME" "INFO" "Configuration saved to $CONFIG_FILE"
@@ -466,6 +469,102 @@ switch_vm_disks_to_sata() {
   return 0
 }
 
+ensure_vm_stopped() {
+  local vm_name="$1"
+  local namespace="$2"
+  local status
+
+  echo "Ensuring VM '$vm_name' is stopped before patching..."
+  log "$SCRIPT_NAME" "INFO" "Ensuring VM '$vm_name' is stopped."
+
+  status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "NotFound")
+
+  if [[ "$status" == "Running" ]]; then
+    log "$SCRIPT_NAME" "INFO" "VM is running. Attempting to stop it."
+    echo "  - VM is running. Sending stop command..."
+    if ! kubectl stop vm "$vm_name" -n "$namespace"; then
+      log "$SCRIPT_NAME" "ERROR" "Failed to send stop command to VM '$vm_name'."
+      echo "  ERROR: Failed to stop VM. Aborting CPU adjustment."
+      return 1
+    fi
+
+    echo "  - Waiting for VM to stop..."
+    for i in {1..30}; do
+      status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "NotFound")
+      if [[ "$status" == "Stopped" ]]; then
+        log "$SCRIPT_NAME" "INFO" "VM '$vm_name' is now stopped."
+        echo "  Success: VM is stopped."
+        return 0
+      fi
+      sleep 2
+    done
+
+    log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM '$vm_name' to stop. Last status: $status"
+    echo "  ERROR: Timeout waiting for VM to stop. Aborting CPU adjustment."
+    return 1
+  elif [[ "$status" == "Stopped" ]]; then
+    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' is already stopped."
+    echo "  - VM is already stopped. Proceeding."
+    return 0
+  else
+    log "$SCRIPT_NAME" "WARNING" "VM status is '$status', not running. Proceeding with caution."
+    echo "  - VM status is '$status'. Proceeding."
+    return 0
+  fi
+}
+
+adjust_vm_cpu_topology() {
+  local vm_name="$1"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
+  local desired_sockets="${3:-}"
+
+  if [[ -z "$desired_sockets" || ! "$desired_sockets" =~ ^[0-9]+$ || "$desired_sockets" -le 0 ]]; then
+    log "$SCRIPT_NAME" "INFO" "POST_MIGRATE_SOCKETS not set or invalid. Skipping CPU topology adjustment."
+    return 0
+  fi
+
+  echo
+  echo "========== Adjusting VM CPU Topology =========="
+  log "$SCRIPT_NAME" "INFO" "Adjusting CPU topology for VM '$vm_name' to $desired_sockets sockets."
+
+  if ! ensure_vm_stopped "$vm_name" "$namespace"; then
+    return 1
+  fi
+
+  local current_sockets current_cores total_vcpus new_cores
+  current_sockets=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.cpu.sockets}')
+  current_cores=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.cpu.cores}')
+  total_vcpus=$((current_sockets * current_cores))
+
+  echo "  - Current Topology: $total_vcpus vCPUs ($current_sockets sockets x $current_cores cores)"
+  log "$SCRIPT_NAME" "DEBUG" "Current topology: $total_vcpus vCPUs ($current_sockets sockets x $current_cores cores)"
+
+  if (( total_vcpus % desired_sockets != 0 )); then
+    log "$SCRIPT_NAME" "ERROR" "Total vCPUs ($total_vcpus) is not divisible by desired sockets ($desired_sockets)."
+    echo "  ERROR: Cannot evenly distribute $total_vcpus vCPUs across $desired_sockets sockets. Skipping."
+    return 1
+  fi
+
+  new_cores=$((total_vcpus / desired_sockets))
+  echo "  - New Topology:     $total_vcpus vCPUs ($desired_sockets sockets x $new_cores cores)"
+  log "$SCRIPT_NAME" "INFO" "New topology will be: $desired_sockets sockets, $new_cores cores."
+
+  echo "  - Applying patch to VM resource..."
+  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
+    -p="[
+      {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/sockets', 'value':$desired_sockets},
+      {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/cores', 'value':$new_cores}
+    ]"; then
+    log "$SCRIPT_NAME" "ERROR" "Failed to patch VM '$vm_name' with new CPU topology."
+    echo "  ERROR: Failed to patch VM resource."
+    return 2
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Successfully patched VM '$vm_name' CPU topology."
+  echo "  Success: VM CPU topology updated."
+  return 0
+}
+
 # --- Main Workflow ---
 
 main() {
@@ -513,6 +612,7 @@ main() {
 
   # Step 7: Post-import actions
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
+  adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
   soft_reboot_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
