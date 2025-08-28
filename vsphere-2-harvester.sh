@@ -403,13 +403,20 @@ start_vm_via_api() {
   echo "========== Starting VM Post-Configuration =========="
   log "$SCRIPT_NAME" "INFO" "Starting VM '$vm_name' after post-migration adjustments."
 
+  # Handle RestartRequired condition
+  if kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.conditions[?(@.type=="RestartRequired")].status}' | grep -q "True"; then
+    echo "  - VM requires restart due to spec changes. Cleaning up old VMI..."
+    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' requires restart. Deleting old VMI."
+    kubectl delete vmi "$vm_name" -n "$namespace" --ignore-not-found || true
+  fi
+
   if ! send_harvester_vm_action "start" "$vm_name" "$namespace"; then
     log "$SCRIPT_NAME" "ERROR" "Failed to send start command for VM '$vm_name'."
     echo "ERROR: Failed to start the VM via API."
     return 1
   fi
 
-  if wait_for_vm_status "Running" "$vm_name" "$namespace" 90; then
+  if wait_for_vm_status "Running" "$vm_name" "$namespace" 300; then
     log "$SCRIPT_NAME" "INFO" "VM '$vm_name' started successfully."
     echo "VM started successfully and is now Running."
     return 0
