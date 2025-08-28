@@ -1,8 +1,7 @@
 import_monitor_status() {
   set +e  # Disable 'exit on error' for this function
   local vm_name="$1"
-  local namespace="${2:-$HARVESTER_NAMESPACE}"   # <--- NEW: use passed namespace or fallback
-  local log_file="${3:-/var/log/vsphere-2-harvester/${vm_name}.log}"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
   local max_wait=600
 
   echo
@@ -10,7 +9,7 @@ import_monitor_status() {
   echo "Streaming logs from the import controller for VM: $vm_name"
   echo "This will stop automatically when the import is finished."
   echo "Press Ctrl+C to stop viewing logs (import will continue in the background)."
-  log "$SCRIPT_NAME" "INFO" "Streaming import controller logs for VM: $vm_name" "$log_file"
+  log "$SCRIPT_NAME" "INFO" "Streaming import controller logs for VM: $vm_name"
 
   local since_time
   since_time=$(date --utc +%Y-%m-%dT%H:%M:%SZ)
@@ -28,7 +27,7 @@ import_monitor_status() {
       sleep 2
     done
     if [[ -z "$pod_name" ]]; then
-      log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming." "$log_file"
+      log "$SCRIPT_NAME" "ERROR" "vm-import-controller pod not found during log streaming."
       echo "[IMPORT-CONTROLLER] $(date '+%H:%M:%S') [ERROR]: vm-import-controller pod not found during log streaming."
       sleep 5
       ((waited++))
@@ -41,7 +40,7 @@ import_monitor_status() {
       sleep 2
     done
     if [[ $logs_ok -eq 0 ]]; then
-      log "$SCRIPT_NAME" "WARNING" "Failed to get logs from $pod_name, will retry." "$log_file"
+      log "$SCRIPT_NAME" "WARNING" "Failed to get logs from $pod_name, will retry."
       echo "[IMPORT-CONTROLLER] $(date '+%H:%M:%S') [WARNING]: Failed to get logs from $pod_name, will retry."
       sleep 5
       ((waited++))
@@ -58,7 +57,7 @@ import_monitor_status() {
       done
     fi
     for ((i = start_index; i < ${#lines[@]}; i++)); do
-      log "IMPORT-CONTROLLER" "INFO" "${lines[$i]}" "$log_file"
+      log "IMPORT-CONTROLLER" "INFO" "${lines[$i]}"
       echo "[IMPORT-CONTROLLER] ${lines[$i]}"
     done
     if [[ ${#lines[@]} -gt 0 ]]; then
@@ -67,14 +66,14 @@ import_monitor_status() {
 
     import_status=$(kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
     if [[ "$import_status" == "virtualMachineRunning" ]]; then
-      log "$SCRIPT_NAME" "INFO" "Import successful! VM is running." "$log_file"
+      log "$SCRIPT_NAME" "INFO" "Import successful! VM is running."
       echo
       echo "✅ Import successful! VM '$vm_name' is running."
       break
     elif [[ "$import_status" == "notfound" ]]; then
-      log "$SCRIPT_NAME" "WARNING" "VirtualMachineImport not found yet, waiting..." "$log_file"
+      log "$SCRIPT_NAME" "WARNING" "VirtualMachineImport not found yet, waiting..."
     else
-      log "$SCRIPT_NAME" "INFO" "Current import status: $import_status, waiting..." "$log_file"
+      log "$SCRIPT_NAME" "INFO" "Current import status: $import_status, waiting..."
     fi
 
     sleep 5
@@ -82,15 +81,15 @@ import_monitor_status() {
   done
 
   if [[ "$import_status" != "virtualMachineRunning" ]]; then
-    log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs." "$log_file"
-    log "$SCRIPT_NAME" "INFO" "Full resource details:" "$log_file"
-    kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$log_file"
+    log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
+    log "$SCRIPT_NAME" "INFO" "Full resource details:"
+    kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$LOG_DIR/${vm_name}.log"
     echo -e "\n❌ ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
     set -e
     return 1
   fi
 
-  log "$SCRIPT_NAME" "INFO" "Import monitoring completed for VM: $vm_name" "$log_file"
+  log "$SCRIPT_NAME" "INFO" "Import monitoring completed for VM: $vm_name"
   echo -e "\nImport monitoring completed for VM: $vm_name"
   set -e
   return 0

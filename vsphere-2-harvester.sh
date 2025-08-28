@@ -12,26 +12,36 @@
 # Author: Paul Dresch @ FIS-ASP
 ###############################################################################
 
+# Exit immediately on errors, unset variables, or failed pipes
 set -euo pipefail
 
-CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
-LOG_DIR="/var/log/vsphere-2-harvester"
-GENERAL_LOG_FILE="$LOG_DIR/general.log"
-SCRIPT_NAME="VSPHERE-2-HARVESTER"
-VERBOSE=0
+# --- Configuration defaults ---
+CONFIG_FILE="${HOME}/.vsphere2harvester.conf"   # User-specific config file
+LOG_DIR="/var/log/vsphere-2-harvester"          # Central log directory
+GENERAL_LOG_FILE="$LOG_DIR/general.log"         # Master audit log
+SCRIPT_NAME="VSPHERE-2-HARVESTER"               # Used as syslog tag
+VERBOSE=0                                       # Default: no DEBUG logs
 
+# Import helper functions (import monitor)
 # shellcheck disable=SC1091
-source ./import_monitor.sh
+if [[ -f ./import_monitor.sh ]]; then
+  source ./import_monitor.sh
+else
+  echo "[${SCRIPT_NAME}] $(date '+%Y-%m-%d %H:%M:%S') [ERROR]: Missing required file: import_monitor.sh" >&2
+  exit 1
+fi
 
+# --- Default migration parameters ---
 DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
 DEFAULT_NAMESPACE="har-fasp-02"
 POST_MIGRATE_SOCKETS="2"
 
-# Ensure namespace variable is always defined
+# Ensure namespace variable is always defined (fallback to default)
 HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
 
+# --- Helper: Show usage/help ---
 show_help() {
   cat <<EOF
 $SCRIPT_NAME
@@ -52,23 +62,42 @@ Author: Paul Dresch @ FIS-ASP
 EOF
 }
 
+# --- Parse CLI arguments ---
 for arg in "$@"; do
   case "$arg" in
-    -v|--verbose) VERBOSE=1; shift ;;
-    -h|--help) show_help; exit 0 ;;
-    *) ;;
+    -v|--verbose)
+      VERBOSE=1
+      shift
+      ;;
+    -h|--help)
+      show_help
+      exit 0
+      ;;
+    *)
+      # Unknown args are ignored for now (could be extended later)
+      ;;
   esac
 done
 
-mkdir -p "$LOG_DIR"
+# --- Ensure log directory exists ---
+if ! mkdir -p "$LOG_DIR"; then
+  echo "[${SCRIPT_NAME}] $(date '+%Y-%m-%d %H:%M:%S') [ERROR]: Failed to create log directory: $LOG_DIR" >&2
+  exit 2
+fi
 
+# --- Logging function ---
 log() {
-  local label="$1" level="$2" message="$3"
+  local label="$1"   # Component or script name
+  local level="$2"   # Log level: DEBUG, INFO, WARNING, ERROR
+  local message="$3" # Log message text
   local priority
+  local timestamp; timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  local formatted="[$label] $timestamp [$level]: $message"
 
-  # Skip DEBUG unless verbose
+  # Skip DEBUG logs unless verbose mode is enabled
   if [[ "$level" == "DEBUG" && "$VERBOSE" -ne 1 ]]; then return; fi
 
+  # Map script log levels to syslog priorities
   case "$level" in
     DEBUG)   priority="user.debug" ;;
     INFO)    priority="user.info" ;;
@@ -77,11 +106,21 @@ log() {
     *)       priority="user.notice" ;;
   esac
 
-  # Send to syslog/journald
-  logger -t "$label" -p "$priority" "$message"
+  # 1. Send to syslog/journald (audit trail in system logs)
+  if ! logger -t "$label" -p "$priority" "$message"; then
+    echo "[$label] $timestamp [WARNING]: Failed to write to syslog" >> "$GENERAL_LOG_FILE"
+  fi
 
-  # Also echo to console for user feedback
-  echo "[$label] [$level]: $message"
+  # 2. Always append to general log file
+  echo "$formatted" >> "$GENERAL_LOG_FILE"
+
+  # 3. If VM_NAME is set, also append to per‑VM log file
+  if [[ -n "${VM_NAME:-}" ]]; then
+    echo "$formatted" >> "$LOG_DIR/${VM_NAME}.log"
+  fi
+
+  # 4. Always echo to console (so user sees progress in real time)
+  echo "$formatted"
 }
 
 setup_log_rotation() {
