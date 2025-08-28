@@ -165,3 +165,4 @@ Enter=Continue, q=Quit
 3. **Windows VMs**  
    - Set disk controller to **SATA** in vCenter before migration.  
    - Install **VirtIO drivers** post‑import for optimal performance.
+   
