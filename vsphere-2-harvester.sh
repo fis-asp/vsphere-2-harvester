@@ -63,10 +63,25 @@ done
 mkdir -p "$LOG_DIR"
 
 log() {
-  local label="$1" level="$2" message="$3" log_file="${4:-$GENERAL_LOG_FILE}"
-  local timestamp; timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+  local label="$1" level="$2" message="$3"
+  local priority
+
+  # Skip DEBUG unless verbose
   if [[ "$level" == "DEBUG" && "$VERBOSE" -ne 1 ]]; then return; fi
-  echo "[$label] $timestamp [$level]: $message" | tee -a "$log_file" >/dev/null || true
+
+  case "$level" in
+    DEBUG)   priority="user.debug" ;;
+    INFO)    priority="user.info" ;;
+    WARNING) priority="user.warning" ;;
+    ERROR)   priority="user.err" ;;
+    *)       priority="user.notice" ;;
+  esac
+
+  # Send to syslog/journald
+  logger -t "$label" -p "$priority" "$message"
+
+  # Also echo to console for user feedback
+  echo "[$label] [$level]: $message"
 }
 
 setup_log_rotation() {
@@ -432,7 +447,9 @@ switch_vm_disks_to_sata() {
   local namespace="${2:-$HARVESTER_NAMESPACE}"
   local disk_names disk_count i disk_name current_bus
 
-  echo "Switching all disks of VM '$vm_name' to use the SATA bus (if needed)..."
+  echo
+  echo "========== Step 7a: Adjust VM Disks =========="
+  echo "Checking and patching disks for VM '$vm_name'..."
   log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
 
   disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
@@ -471,7 +488,9 @@ ensure_vm_stopped() {
   local namespace="$2"
   local status
 
-  echo "Ensuring VM '$vm_name' is stopped before patching..."
+  echo
+  echo "========== Ensuring VM is Stopped =========="
+  echo "Checking VM '$vm_name' status before patching..."
   log "$SCRIPT_NAME" "INFO" "Ensuring VM '$vm_name' is stopped."
 
   status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "NotFound")
@@ -556,6 +575,24 @@ adjust_vm_cpu_topology() {
   return 0
 }
 
+cleanup_virtual_machine_import() {
+  local vm_name="$1"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
+
+  echo
+  echo "========== Cleaning up VirtualMachineImport =========="
+  log "$SCRIPT_NAME" "INFO" "Cleaning up VirtualMachineImport for VM '$vm_name'."
+
+  if kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" &>/dev/null; then
+    kubectl delete virtualmachineimport.migration "$vm_name" -n "$namespace" --ignore-not-found
+    log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$vm_name' deleted."
+    echo "VirtualMachineImport resource cleaned up."
+  else
+    log "$SCRIPT_NAME" "INFO" "No VirtualMachineImport resource found for '$vm_name'."
+    echo "No VirtualMachineImport resource found. Skipping cleanup."
+  fi
+}
+
 # --- Main Workflow ---
 
 main() {
@@ -605,6 +642,8 @@ main() {
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
   start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
+
+  cleanup_virtual_machine_import "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
   echo "========== Migration workflow complete! =========="
