@@ -2,7 +2,7 @@ import_monitor_status() {
   set +e  # Disable 'exit on error' for this function
   local vm_name="$1"
   local namespace="${2:-$HARVESTER_NAMESPACE}"
-  local max_wait=600
+  local max_wait=7200
 
   echo
   echo "========== Import Monitor =========="
@@ -76,7 +76,7 @@ import_monitor_status() {
       log "$SCRIPT_NAME" "INFO" "Current import status: $import_status, waiting..."
     fi
 
-    sleep 5
+    sleep 1
     ((waited++))
   done
 
