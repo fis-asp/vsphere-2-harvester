@@ -24,8 +24,8 @@ VERBOSE=0                                       # Default: no DEBUG logs
 
 # Import helper functions (import monitor)
 # shellcheck disable=SC1091
-if [[ -f ./import_monitor.sh ]]; then
-  source ./import_monitor.sh
+if [[ -f /root/vsphere-2-harvester/main/import_monitor.sh ]]; then
+  source /root/vsphere-2-harvester/main/import_monitor.sh
 else
   echo "[${SCRIPT_NAME}] $(date '+%Y-%m-%d %H:%M:%S') [ERROR]: Missing required file: import_monitor.sh" >&2
   exit 1
