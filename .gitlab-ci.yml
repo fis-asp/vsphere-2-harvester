@@ -20,7 +20,7 @@ include:
     remote-path: "fis-asp/intern/technical-services/team-8/hypervisor/suse-virtualization/vsphere-2-harvester.git"
     prune-missing-enable: true
     disable: true   # disables the default job, required if multiple runner execute this job
-    repo-base: "/root/vsphere-2-harvester
+    repo-base: "/root/vsphere-2-harvester"
     chown-enable: false
 
 secret_gate:
