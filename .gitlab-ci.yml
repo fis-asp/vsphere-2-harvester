@@ -1,5 +1,5 @@
 include:
-  - component: $CI_SERVER_FQDN/fis-asp/intern/technical-services/team-8/gitlab/asp8-ci-cd-templates/template-branch-sync@v1.0.2
+  - component: $CI_SERVER_FQDN/fis-asp/intern/technical-services/team-8/gitlab/asp8-ci-cd-templates/template-branch-sync@v1.0.6
     inputs:
       remote-path: "fis-asp/intern/technical-services/team-8/hypervisor/suse-virtualization/vsphere-2-harvester.git"
       runner-tags: ["asp-svp-mgmt.asp.aspint.de"]
