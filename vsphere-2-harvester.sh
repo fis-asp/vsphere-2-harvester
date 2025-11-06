@@ -680,6 +680,9 @@ main() {
   # Step 7: Post-import actions
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
+  
+  # TEST: api call to early?
+  sleep 60
   start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   cleanup_virtual_machine_import "$VM_NAME" "$HARVESTER_NAMESPACE"
