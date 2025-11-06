@@ -681,7 +681,7 @@ main() {
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
   
-  # TEST: api call to early?
+  # TEST: api call to early? \o/
   sleep 60
   start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
