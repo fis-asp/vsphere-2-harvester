@@ -3,8 +3,8 @@
 ###############################################################################
 # vsphere-2-harvester.sh
 #
-# Enterprise-ready, user-friendly, and auditable migration of VMware vSphere
-# VMs to Harvester using the vm-import-controller and Harvester API.
+# Migration of VMware vSphere VMs to Harvester 
+# using the vm-import-controller and Harvester API.
 #
 # Usage:
 #   ./vsphere-2-harvester.sh [--verbose|-v] [--help|-h]
