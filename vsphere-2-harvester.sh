@@ -238,7 +238,7 @@ adjust_config_menu() {
   while true; do
     local choice
     choice=$(gum choose \
-      --header "$(gum style --foreground 212 --bold '⚙️  Migration Configuration')" \
+      --header "$(gum style --foreground 212 --bold 'Migration Configuration')" \
       --height 18 \
       "1) Harvester API URL: ${HARVESTER_URL:-(not set)}" \
       "2) Harvester Access Key: ${CATTLE_ACCESS_KEY:+✓ set}" \
@@ -705,7 +705,7 @@ pause_before_exit() {
   local duration="${1:-60}"
   echo
   gum style --border rounded --border-foreground 240 --padding "1 2" \
-    "$(gum style --foreground 240 '⏱ Session will close in $duration seconds')" \
+    "$(gum style --foreground 240 "⏱ Session will close in $duration seconds")" \
     "Press any key to exit now, or wait..."
   
   read -t "$duration" -n 1 -r || true
