@@ -709,7 +709,7 @@ main() {
   check_gum_available
 
   gum style --border double --border-foreground 212 --padding "1 2" \
-    "$(gum style --foreground 212 --bold '🎀 vSphere → Harvester Migration')" \
+    "$(gum style --foreground 212 --bold 'vSphere → Harvester Migration')" \
     "$(gum style --foreground 240 'Quickly and safely migrate VMs')"
 
   echo
@@ -775,7 +775,7 @@ main() {
   echo
 
   gum style --border double --border-foreground 46 --padding "1 2" \
-    "$(gum style --foreground 46 --bold '✨ Migration Complete!')" \
+    "$(gum style --foreground 46 --bold 'Migration Complete!')" \
     "VM '$VM_NAME' has been migrated to Harvester." \
     "Manage it via the Harvester UI."
 
