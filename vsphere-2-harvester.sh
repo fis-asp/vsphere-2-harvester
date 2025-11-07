@@ -63,10 +63,15 @@ EOF
 }
 
 # --- Parse CLI arguments ---
+SKIP_CONFIG_MENU=0
 for arg in "$@"; do
   case "$arg" in
     -v|--verbose)
       VERBOSE=1
+      shift
+      ;;
+    --skip-config-menu)
+      SKIP_CONFIG_MENU=1
       shift
       ;;
     -h|--help)
@@ -329,10 +334,9 @@ run_in_tmux_session() {
   tmux new-session -d -s "$session_name" -x 200 -y 50 -c "$(pwd)" \
     bash --noprofile --norc -i -c "
       source /etc/bashrc 2>/dev/null || true
-      export SKIP_CONFIG_MENU=1
       export KUBECONFIG=\"\${HOME}/.kube/configs/${KUBECONFIG_NAME}\"
       source <(kubectl completion bash) 2>/dev/null || true
-      exec '$0' --verbose
+      exec '$0' --verbose --skip-config-menu
     "
 
   if [[ "$detach_mode" == "true" ]]; then
@@ -716,24 +720,30 @@ main() {
     source "$CONFIG_FILE"
   fi
 
-  # Show and adjust config
-  adjust_config_menu
-  if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
-    gum style --foreground 196 "Migration cancelled by user"
-    log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
-    exit 0
-  fi
+  # Show and adjust config (unless --skip-config-menu was passed)
+  if [[ "$SKIP_CONFIG_MENU" -ne 1 ]]; then
+    adjust_config_menu
+    if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
+      gum style --foreground 196 "Migration cancelled by user"
+      log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
+      exit 0
+    fi
 
-  # Save config
-  save_config
-  show_success "Configuration saved"
+    # Save config
+    save_config
+    show_success "Configuration saved"
 
-  echo
+    echo
 
-  # Try to run in tmux (if not already in tmux)
-  if [[ -z "${TMUX:-}" ]]; then
-    run_in_tmux_session "false"
-    exit $?
+    # Try to run in tmux (if not already in tmux)
+    if [[ -z "${TMUX:-}" ]]; then
+      run_in_tmux_session "false"
+      exit $?
+    fi
+  else
+    # Re-invoked in tmux, config is already loaded above
+    show_info "Configuration loaded from saved file"
+    echo
   fi
 
   # Migration workflow
