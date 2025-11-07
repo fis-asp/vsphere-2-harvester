@@ -700,6 +700,23 @@ cleanup_virtual_machine_import() {
   log "$SCRIPT_NAME" "INFO" "Cleanup completed for VM '$vm_name'."
 }
 
+# Helper to pause before exit
+pause_before_exit() {
+  local duration="${1:-60}"
+  echo
+  gum style --border rounded --border-foreground 240 --padding "1 2" \
+    "$(gum style --foreground 240 '⏱ Session will close in $duration seconds')" \
+    "Press any key to exit now, or wait..."
+  
+  read -t "$duration" -n 1 -r || true
+  
+  if [[ $? -eq 0 ]]; then
+    gum style --foreground 46 "Exiting..."
+  else
+    gum style --foreground 33 "Auto-closing session..."
+  fi
+}
+
 # --- Main Workflow ---
 
 main() {
@@ -776,13 +793,23 @@ main() {
 
   gum style --border double --border-foreground 46 --padding "1 2" \
     "$(gum style --foreground 46 --bold 'Migration Complete!')" \
+    "" \
     "VM '$VM_NAME' has been migrated to Harvester." \
-    "Manage it via the Harvester UI."
+    "" \
+    "$(gum style --foreground 226 '⚠ Next Steps:')" \
+    "  1. Verify the VM is running in Harvester" \
+    "  2. Test VM connectivity and services" \
+    "  3. Clean up/decommission the VM in vSphere" \
+    "" \
+    "Manage the VM via the Harvester UI at ${HARVESTER_URL}"
 
   echo
 
   log "$SCRIPT_NAME" "INFO" "Migration process completed for VM: $VM_NAME"
   log "$SCRIPT_NAME" "DEBUG" "Script finished"
+
+  # Keep session open for 60 seconds or until user presses a key
+  pause_before_exit 60
 }
 
 main "$@"
