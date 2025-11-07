@@ -19,6 +19,7 @@ CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
 LOG_DIR="/var/log/vsphere-2-harvester"
 GENERAL_LOG_FILE="$LOG_DIR/general.log"
 SCRIPT_NAME="VSPHERE-2-HARVESTER"
+TMUX_SESSION_PREFIX="v2h"
 VERBOSE=0
 
 # Import helper functions
