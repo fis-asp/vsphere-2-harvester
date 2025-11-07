@@ -12,18 +12,17 @@
 # Author: Paul Dresch @ FIS-ASP
 ###############################################################################
 
-# Exit immediately on errors, unset variables, or failed pipes
 set -euo pipefail
 
 # --- Configuration defaults ---
-CONFIG_FILE="${HOME}/.vsphere2harvester.conf"   # User-specific config file
-LOG_DIR="/var/log/vsphere-2-harvester"          # Central log directory
-GENERAL_LOG_FILE="$LOG_DIR/general.log"         # Master audit log
-SCRIPT_NAME="VSPHERE-2-HARVESTER"               # Used as syslog tag
-VERBOSE=0                                       # Default: no DEBUG logs
+CONFIG_FILE="${HOME}/.vsphere2harvester.conf"
+LOG_DIR="/var/log/vsphere-2-harvester"
+GENERAL_LOG_FILE="$LOG_DIR/general.log"
+SCRIPT_NAME="VSPHERE-2-HARVESTER"
+TMUX_SESSION_PREFIX="v2h"
+VERBOSE=0
 
-# Import helper functions (import monitor)
-# shellcheck disable=SC1091
+# Import helper functions
 if [[ -f /root/vsphere-2-harvester/main/import_monitor.sh ]]; then
   source /root/vsphere-2-harvester/main/import_monitor.sh
 else
@@ -36,10 +35,11 @@ DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
 DEFAULT_NAMESPACE="har-fasp-02"
+DEFAULT_KUBECONFIG="config_asp-vic02"
 POST_MIGRATE_SOCKETS="2"
 
-# Ensure namespace variable is always defined (fallback to default)
 HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
+KUBECONFIG_NAME="${KUBECONFIG_NAME:-$DEFAULT_KUBECONFIG}"
 
 # --- Helper: Show usage/help ---
 show_help() {
@@ -63,10 +63,15 @@ EOF
 }
 
 # --- Parse CLI arguments ---
+SKIP_CONFIG_MENU=0
 for arg in "$@"; do
   case "$arg" in
     -v|--verbose)
       VERBOSE=1
+      shift
+      ;;
+    --skip-config-menu)
+      SKIP_CONFIG_MENU=1
       shift
       ;;
     -h|--help)
@@ -74,7 +79,6 @@ for arg in "$@"; do
       exit 0
       ;;
     *)
-      # Unknown args are ignored for now (could be extended later)
       ;;
   esac
 done
@@ -87,17 +91,15 @@ fi
 
 # --- Logging function ---
 log() {
-  local label="$1"   # Component or script name
-  local level="$2"   # Log level: DEBUG, INFO, WARNING, ERROR
-  local message="$3" # Log message text
+  local label="$1"
+  local level="$2"
+  local message="$3"
   local priority
   local timestamp; timestamp=$(date '+%Y-%m-%d %H:%M:%S')
   local formatted="[$label] $timestamp [$level]: $message"
 
-  # Skip DEBUG logs unless verbose mode is enabled
   if [[ "$level" == "DEBUG" && "$VERBOSE" -ne 1 ]]; then return; fi
 
-  # Map script log levels to syslog priorities
   case "$level" in
     DEBUG)   priority="user.debug" ;;
     INFO)    priority="user.info" ;;
@@ -106,20 +108,16 @@ log() {
     *)       priority="user.notice" ;;
   esac
 
-  # 1. Send to syslog/journald (audit trail in system logs)
   if ! logger -t "$label" -p "$priority" "$message"; then
     echo "[$label] $timestamp [WARNING]: Failed to write to syslog" >> "$GENERAL_LOG_FILE"
   fi
 
-  # 2. Always append to general log file
   echo "$formatted" >> "$GENERAL_LOG_FILE"
 
-  # 3. If VM_NAME is set, also append to per‑VM log file
   if [[ -n "${VM_NAME:-}" ]]; then
     echo "$formatted" >> "$LOG_DIR/${VM_NAME}.log"
   fi
 
-  # 4. Always echo to console (so user sees progress in real time)
   echo "$formatted"
 }
 
@@ -144,89 +142,141 @@ $log_dir/*.log {
 }
 EOF
     log "$SCRIPT_NAME" "INFO" "Logrotate configuration created at $logrotate_config"
-    echo "Logrotate configuration created at $logrotate_config"
   else
     log "$SCRIPT_NAME" "INFO" "Logrotate configuration already exists at $logrotate_config"
   fi
 }
 
-# --- UX Helper Functions ---
+# --- GUM UX Helper Functions ---
 
-prompt_for_var() {
-  local var="$1" prompt="$2" default="$3" example="$4" secret="${5:-0}"
-  local current="${!var:-}"
-  local showval="$current"
-  [[ "$secret" == "1" && -n "$current" ]] && showval="********"
-  echo
-  echo "------------------------------------------------------"
-  echo "$prompt"
-  [[ -n "$example" ]] && echo "  Example: $example"
-  [[ -n "$showval" ]] && echo "  Current value: $showval"
-  [[ -n "$default" ]] && echo "  Default: $default"
-  echo "  (Press Enter to keep current/default, or type new value)"
-  if [[ "$secret" == "1" ]]; then
-    read -rsp "> " input; echo
-  else
-    read -rp "> " input
+check_gum_available() {
+  log "$SCRIPT_NAME" "DEBUG" "Checking for gum availability..."
+  if ! command -v gum &>/dev/null; then
+    echo "ERROR: 'gum' not found. Please install it: brew install gum"
+    log "$SCRIPT_NAME" "ERROR" "gum not installed. Exiting."
+    exit 1
   fi
+  log "$SCRIPT_NAME" "INFO" "gum is available."
+}
+
+show_step_header() {
+  local step="$1"
+  local title="$2"
+  gum style --border double --border-foreground 57 --padding "1 2" \
+    "$(gum style --foreground 57 --bold "📋 $step: $title")"
+}
+
+show_success() {
+  local message="$1"
+  gum style --foreground 46 "✓ $message"
+  log "$SCRIPT_NAME" "INFO" "$message"
+}
+
+show_error() {
+  local message="$1"
+  gum style --foreground 196 "✗ $message"
+  log "$SCRIPT_NAME" "ERROR" "$message"
+}
+
+show_info() {
+  local message="$1"
+  gum style --foreground 33 "ℹ $message"
+  log "$SCRIPT_NAME" "INFO" "$message"
+}
+
+show_warning() {
+  local message="$1"
+  gum style --foreground 226 "⚠ $message"
+  log "$SCRIPT_NAME" "WARNING" "$message"
+}
+
+confirm_action() {
+  local prompt="$1"
+  if gum confirm --prompt.foreground 212 "$prompt"; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# --- Refactored: prompt_for_var using gum ---
+prompt_for_var() {
+  local var="$1"
+  local prompt="$2"
+  local default="$3"
+  local secret="${4:-0}"
+  local input
+  local current="${!var:-}"
+
+  if [[ "$secret" == "1" ]]; then
+    input=$(gum input --password --placeholder "$prompt")
+  else
+    input=$(gum input \
+      --placeholder "$prompt" \
+      --value "${current}" \
+      --width 70)
+  fi
+
+  if [[ $? -eq 130 ]]; then
+    return 1
+  fi
+
   if [[ -n "$input" ]]; then
     export "$var"="$input"
     log "$SCRIPT_NAME" "INFO" "$var set to user input"
   elif [[ -n "$current" ]]; then
     export "$var"="$current"
-    log "$SCRIPT_NAME" "INFO" "$var kept as current value"
   else
     export "$var"="$default"
-    log "$SCRIPT_NAME" "INFO" "$var set to default"
-  fi
-  # Simple validation examples
-  if [[ "$var" == "HARVESTER_URL" && ! "${!var}" =~ ^https:// ]]; then
-    echo "WARNING: Harvester URL should start with 'https://'"
-    log "$SCRIPT_NAME" "WARNING" "HARVESTER_URL does not start with https://"
-  fi
-  if [[ "$var" == "VSPHERE_ENDPOINT" && ! "${!var}" =~ ^https:// ]]; then
-    echo "WARNING: vSphere endpoint should start with 'https://'"
-    log "$SCRIPT_NAME" "WARNING" "VSPHERE_ENDPOINT does not start with https://"
   fi
 }
 
+# --- Refactored: adjust_config_menu using gum ---
 adjust_config_menu() {
   USER_ABORTED=0
+
   while true; do
-    clear
-    echo "========== Default/Current Migration Configuration =========="
-    echo "  1) Harvester API URL:      ${HARVESTER_URL:-}"
-    echo "  2) Harvester Access Key:   ${CATTLE_ACCESS_KEY:+********}"
-    echo "  3) Harvester Secret Key:   ${CATTLE_SECRET_KEY:+********}"
-    echo "  4) vSphere User:           ${VSPHERE_USER:-}"
-    echo "  5) vSphere Endpoint:       ${VSPHERE_ENDPOINT:-}"
-    echo "  6) vSphere Datacenter:     ${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}"
-    echo "  7) Source Network:         ${SRC_NET:-$DEFAULT_SRC_NET}"
-    echo "  8) Destination Network:    ${DST_NET:-$DEFAULT_DST_NET}"
-    echo "  9) VM Name:                ${VM_NAME:-}"
-    echo " 10) VM Folder:              ${VM_FOLDER:-}"
-    echo " 11) Namespace:             ${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
-    echo "============================================================"
-    echo "These are the default/currently saved values."
-    echo "Type the number to adjust, or press Enter to continue with these values."
-    echo "Enter=Continue, q=Quit"
-    read -rp "Choice: " choice
+    local choice
+    choice=$(gum choose \
+      --header "$(gum style --foreground 212 --bold 'Migration Configuration')" \
+      --height 18 \
+      "1) Harvester API URL: ${HARVESTER_URL:-(not set)}" \
+      "2) Harvester Access Key: ${CATTLE_ACCESS_KEY:+✓ set}" \
+      "3) Harvester Secret Key: ${CATTLE_SECRET_KEY:+✓ set}" \
+      "4) vSphere User: ${VSPHERE_USER:-(not set)}" \
+      "5) vSphere Password: ${VSPHERE_PASS:+✓ set}" \
+      "6) vSphere Endpoint: ${VSPHERE_ENDPOINT:-(not set)}" \
+      "7) vSphere Datacenter: ${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" \
+      "8) Source Network: ${SRC_NET:-$DEFAULT_SRC_NET}" \
+      "9) Destination Network: ${DST_NET:-$DEFAULT_DST_NET}" \
+      "10) VM Name: ${VM_NAME:-(not set)}" \
+      "11) VM Folder: ${VM_FOLDER:-(optional)}" \
+      "12) Namespace: ${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" \
+      "13) CPU Sockets: ${POST_MIGRATE_SOCKETS:-2}" \
+      "$(gum style --foreground 46 '✓ Continue')" \
+      "$(gum style --foreground 196 '✗ Cancel')")
+
+    if [[ $? -eq 130 ]]; then
+      USER_ABORTED=1
+      break
+    fi
+
     case "$choice" in
-      1) prompt_for_var "HARVESTER_URL" "Enter Harvester API URL" "${HARVESTER_URL:-}" "https://your-harvester.example.com" ;;
-      2) prompt_for_var "CATTLE_ACCESS_KEY" "Enter Harvester API Access Key" "${CATTLE_ACCESS_KEY:-}" "token-abc123" ;;
-      3) prompt_for_var "CATTLE_SECRET_KEY" "Enter Harvester API Secret Key" "${CATTLE_SECRET_KEY:-}" "long-secret-string" 1 ;;
-      4) prompt_for_var "VSPHERE_USER" "Enter vSphere username" "${VSPHERE_USER:-}" "administrator@vsphere.local" ;;
-      5) prompt_for_var "VSPHERE_ENDPOINT" "Enter vSphere endpoint" "${VSPHERE_ENDPOINT:-}" "https://your-vcenter/sdk" ;;
-      6) prompt_for_var "VSPHERE_DC" "Enter vSphere datacenter name" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" "ASP" ;;
-      7) prompt_for_var "SRC_NET" "Enter source network name" "${SRC_NET:-$DEFAULT_SRC_NET}" "RHV-Testing" ;;
-      8) prompt_for_var "DST_NET" "Enter destination network name" "${DST_NET:-$DEFAULT_DST_NET}" "default/rhv-testing" ;;
-      9) prompt_for_var "VM_NAME" "Enter VM name" "${VM_NAME:-}" "my-vm-name" ;;
-      10) prompt_for_var "VM_FOLDER" "Enter VM folder (optional)" "${VM_FOLDER:-}" "/Datacenter/vm/Folder" ;;
-      11) prompt_for_var "HARVESTER_NAMESPACE" "Enter Harvester namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" "default" ;;
-      12) prompt_for_var "POST_MIGRATE_SOCKETS" "Enter desired socket count (optional)" "${POST_MIGRATE_SOCKETS:-}" "2" ;;
-      [Qq]) USER_ABORTED=1; break ;;
-      "") break ;;
-      *) echo "Invalid choice. Try again."; sleep 1 ;;
+      *"Continue"*) break ;;
+      *"Cancel"*) USER_ABORTED=1; break ;;
+      *"1)"*) prompt_for_var "HARVESTER_URL" "Harvester API URL" "${HARVESTER_URL:-}" ;;
+      *"2)"*) prompt_for_var "CATTLE_ACCESS_KEY" "Harvester Access Key" "${CATTLE_ACCESS_KEY:-}" ;;
+      *"3)"*) prompt_for_var "CATTLE_SECRET_KEY" "Harvester Secret Key" "${CATTLE_SECRET_KEY:-}" 1 ;;
+      *"4)"*) prompt_for_var "VSPHERE_USER" "vSphere Username" "${VSPHERE_USER:-}" ;;
+      *"5)"*) prompt_for_var "VSPHERE_PASS" "vSphere Password" "${VSPHERE_PASS:-}" 1 ;;
+      *"6)"*) prompt_for_var "VSPHERE_ENDPOINT" "vSphere Endpoint" "${VSPHERE_ENDPOINT:-}" ;;
+      *"7)"*) prompt_for_var "VSPHERE_DC" "Datacenter" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" ;;
+      *"8)"*) prompt_for_var "SRC_NET" "Source Network" "${SRC_NET:-$DEFAULT_SRC_NET}" ;;
+      *"9)"*) prompt_for_var "DST_NET" "Destination Network" "${DST_NET:-$DEFAULT_DST_NET}" ;;
+      *"10)"*) prompt_for_var "VM_NAME" "VM Name" "${VM_NAME:-}" ;;
+      *"11)"*) prompt_for_var "VM_FOLDER" "VM Folder (optional)" "${VM_FOLDER:-}" ;;
+      *"12)"*) prompt_for_var "HARVESTER_NAMESPACE" "Namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" ;;
+      *"13)"*) prompt_for_var "POST_MIGRATE_SOCKETS" "Socket Count" "${POST_MIGRATE_SOCKETS:-2}" ;;
     esac
   done
 }
@@ -251,9 +301,59 @@ EOF
   log "$SCRIPT_NAME" "INFO" "Configuration saved to $CONFIG_FILE"
 }
 
+# --- tmux session management ---
+check_tmux_available() {
+  log "$SCRIPT_NAME" "DEBUG" "Checking for tmux availability..."
+  if ! command -v tmux &>/dev/null; then
+    log "$SCRIPT_NAME" "WARNING" "tmux not installed, running inline."
+    return 1
+  fi
+  log "$SCRIPT_NAME" "INFO" "tmux is available."
+  return 0
+}
+
+run_in_tmux_session() {
+  local session_name="${TMUX_SESSION_PREFIX}-${VM_NAME}"
+  local detach_mode="${1:-false}"
+
+  if [[ -n "${TMUX:-}" ]]; then
+    log "$SCRIPT_NAME" "INFO" "Already running in tmux session. Running migration inline."
+    return 1
+  fi
+
+  if ! check_tmux_available; then
+    return 1
+  fi
+
+  if tmux has-session -t "$session_name" 2>/dev/null; then
+    log "$SCRIPT_NAME" "INFO" "Killing existing tmux session: $session_name"
+    tmux kill-session -t "$session_name"
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Creating tmux session: $session_name"
+  tmux new-session -d -s "$session_name" -x 200 -y 50 -c "$(pwd)" \
+    bash --noprofile --norc -i -c "
+      source /etc/bashrc 2>/dev/null || true
+      export KUBECONFIG=\"\${HOME}/.kube/configs/${KUBECONFIG_NAME}\"
+      source <(kubectl completion bash) 2>/dev/null || true
+      exec '$0' --verbose --skip-config-menu
+    "
+
+  if [[ "$detach_mode" == "true" ]]; then
+    show_info "Migration started in tmux session: $session_name (detached)"
+    echo "View session: tmux attach-session -t $session_name"
+    log "$SCRIPT_NAME" "INFO" "Migration running detached in tmux session: $session_name"
+    return 0
+  else
+    show_info "Migration starting in tmux session: $session_name (attaching)..."
+    sleep 2
+    tmux attach-session -t "$session_name"
+    return 0
+  fi
+}
+
 # --- Shared VM Action Helper Functions ---
 
-# Sends a specific action (e.g., stop, start) to a VM via the Harvester API
 send_harvester_vm_action() {
   local action="$1"
   local vm_name="$2"
@@ -261,13 +361,11 @@ send_harvester_vm_action() {
   local base_url="${HARVESTER_URL%/}/v1/harvester/kubevirt.io.virtualmachines/${namespace}/${vm_name}"
   local url="${base_url}?action=${action}"
   local response http_code curl_error
-  local action_sleeptime="2"
 
-  log "$SCRIPT_NAME" "INFO" "Waiting a ${action_sleeptime} seconds before Sending API Action"
-  sleep "$action_sleeptime"
-  echo "  - Sending API action '$action' to VM '$vm_name'..."
-  log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name' via Harvester API."
+  log "$SCRIPT_NAME" "INFO" "Attempting VM action '$action' for '$vm_name'."
   log "$SCRIPT_NAME" "DEBUG" "API URL: $url"
+
+  sleep 2
 
   response=$(curl -sSL -w "\n%{http_code}" -u "${CATTLE_ACCESS_KEY}:${CATTLE_SECRET_KEY}" \
     -X POST \
@@ -283,202 +381,166 @@ send_harvester_vm_action() {
 
   if [[ $curl_error -ne 0 ]]; then
     log "$SCRIPT_NAME" "ERROR" "curl command failed with exit code $curl_error: $response"
-    echo "    ERROR: curl command failed for action '$action'."
     return 2
   fi
+
   if [[ "$http_code" -ge 400 ]]; then
     log "$SCRIPT_NAME" "ERROR" "API call '$action' returned HTTP $http_code. Response: $response"
-    echo "    ERROR: API call '$action' returned HTTP $http_code."
     return 3
   fi
+
   if echo "$response" | grep -q '"type":"error"'; then
-    log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error in response: $response"
-    echo "    ERROR: API reported an error for action '$action'."
+    log "$SCRIPT_NAME" "ERROR" "API action '$action' failed for VM '$vm_name'. API error: $response"
     return 1
   fi
 
   log "$SCRIPT_NAME" "INFO" "API action '$action' triggered for VM '$vm_name' (HTTP $http_code)."
-  echo "    Action '$action' sent successfully."
   return 0
 }
 
-# Waits for a VM to reach a desired status (e.g., Running, Stopped)
 wait_for_vm_status() {
   local desired_status="$1"
   local vm_name="$2"
   local namespace="${3:-$HARVESTER_NAMESPACE}"
-  local timeout="${4:-60}" # Increased timeout for stopping
+  local timeout="${4:-60}"
   local current_status
 
-  echo "  - Waiting for VM '$vm_name' to enter '$desired_status' state (timeout: ${timeout}s)..."
-  for ((i=0; i<timeout; i+=2)); do
-    current_status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "Unknown")
-    log "$SCRIPT_NAME" "DEBUG" "Waiting for VM '$vm_name' status: $current_status (want: $desired_status)"
-    if [[ "$current_status" == "$desired_status" ]]; then
-      echo "    Success: VM status is now '$current_status'."
-      return 0
-    fi
-    sleep 2
-  done
+  if ! gum spin --spinner dot --title "Waiting for VM to enter $desired_status state..." -- \
+      bash -c "
+        for ((i=0; i<$timeout; i+=2)); do
+          current_status=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo 'Unknown')
+          if [[ \"\$current_status\" == \"$desired_status\" ]]; then
+            exit 0
+          fi
+          sleep 2
+        done
+        exit 1
+      "; then
+    log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM status '$desired_status'."
+    return 1
+  fi
 
-  echo "    ERROR: Timeout waiting for VM status '$desired_status'. Last known status: '$current_status'."
-  log "$SCRIPT_NAME" "ERROR" "Timeout waiting for VM status '$desired_status'. Last status: $current_status"
-  return 1
+  log "$SCRIPT_NAME" "INFO" "VM status is now '$desired_status'."
+  show_success "VM is now in $desired_status state"
+  return 0
 }
 
-# --- Technical Functions (with context and logging) ---
+# --- Technical Functions ---
 
 check_prerequisites() {
-  echo
-  echo "========== Step 1: Prerequisite Check =========="
-  echo "We will now check if 'kubectl' is installed and configured."
-  echo "This is required to interact with your Harvester cluster."
-  log "$SCRIPT_NAME" "INFO" "Checking prerequisites..."
-  if ! command -v kubectl &>/dev/null; then
-    echo "ERROR: 'kubectl' not found. Please install and configure it for your Harvester cluster."
+  show_step_header "Step 1" "Prerequisite Check"
+
+  if ! gum spin --spinner dot --title "Checking kubectl..." -- \
+      bash -c "command -v kubectl &>/dev/null"; then
+    show_error "kubectl not found. Please install and configure it."
     log "$SCRIPT_NAME" "ERROR" "kubectl not found. Exiting."
     exit 10
   fi
+
+  show_success "kubectl is available and configured"
   log "$SCRIPT_NAME" "INFO" "kubectl found: $(command -v kubectl)"
   log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client 2>&1)"
-  echo "Success: kubectl is available and configured."
 }
 
 create_vsphere_secret() {
-  echo
-  echo "========== Step 2: Create vSphere Secret =========="
-  echo "We will now create a Kubernetes secret in Harvester to store your vSphere credentials."
-  echo "This allows Harvester to connect to your vSphere environment securely."
-  log "$SCRIPT_NAME" "INFO" "Ensuring vSphere credentials secret exists in Harvester..."
-  if ! kubectl get secret vsphere-credentials -n "$HARVESTER_NAMESPACE" &>/dev/null; then
-    kubectl create secret generic vsphere-credentials \
-      --from-literal=username="$VSPHERE_USER" \
-      --from-literal=password="$VSPHERE_PASS" \
-      -n "$HARVESTER_NAMESPACE"
-    log "$SCRIPT_NAME" "INFO" "Secret 'vsphere-credentials' created."
-    echo "Success: vSphere secret created."
-  else
-    log "$SCRIPT_NAME" "INFO" "Secret 'vsphere-credentials' already exists. Skipping creation."
-    echo "vSphere secret already exists. Skipping."
-  fi
+  show_step_header "Step 2" "Create vSphere Secret"
+
+  gum spin --spinner dot --title "Creating vSphere credentials secret..." -- \
+    bash -c "
+      if ! kubectl get secret vsphere-credentials -n '$HARVESTER_NAMESPACE' &>/dev/null; then
+        kubectl create secret generic vsphere-credentials \
+          --from-literal=username='$VSPHERE_USER' \
+          --from-literal=password='$VSPHERE_PASS' \
+          -n '$HARVESTER_NAMESPACE' 2>&1
+        echo 'Secret created'
+      else
+        echo 'Secret already exists'
+      fi
+    " || true
+
+  show_success "vSphere secret ready"
 }
 
 create_vmware_source() {
-  echo
-  echo "========== Step 3: Create VmwareSource =========="
-  echo "We will now create or validate the VmwareSource resource in Harvester."
-  echo "This connects Harvester to your vSphere environment."
-  log "$SCRIPT_NAME" "INFO" "Ensuring VmwareSource resource exists..."
-  if ! kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" &>/dev/null; then
-    cat <<EOF | kubectl apply -f -
+  show_step_header "Step 3" "Create VmwareSource"
+
+  gum spin --spinner dot --title "Setting up VmwareSource resource..." -- \
+    bash -c "
+      kubectl apply -f - <<'EOFVMWARE'
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VmwareSource
 metadata:
   name: vcsim
   namespace: $HARVESTER_NAMESPACE
 spec:
-  endpoint: "$VSPHERE_ENDPOINT"
-  dc: "$VSPHERE_DC"
+  endpoint: \"$VSPHERE_ENDPOINT\"
+  dc: \"$VSPHERE_DC\"
   credentials:
     name: vsphere-credentials
     namespace: $HARVESTER_NAMESPACE
-EOF
-    log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' created."
-    echo "Success: VmwareSource created."
-  else
-    log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' already exists. Skipping creation."
-    echo "VmwareSource already exists. Skipping."
-  fi
+EOFVMWARE
+    " || true
+
+  show_success "VmwareSource created"
+  log "$SCRIPT_NAME" "INFO" "VmwareSource 'vcsim' created."
 }
 
 wait_for_vmware_source_ready() {
-  echo
-  echo "========== Step 4: Wait for VmwareSource =========="
-  echo "Waiting for VmwareSource to be ready (this may take a minute)..."
-  log "$SCRIPT_NAME" "INFO" "Waiting for VmwareSource to be ready..."
-  for i in {1..20}; do
-    STATUS=$(kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" -o jsonpath='{.status.status}' 2>/dev/null || echo "notfound")
-    log "$SCRIPT_NAME" "DEBUG" "VmwareSource status: $STATUS"
-    if [[ "$STATUS" == "clusterReady" ]]; then
-      log "$SCRIPT_NAME" "INFO" "VmwareSource is ready."
-      echo "Success: VmwareSource is ready."
-      return
-    elif [[ "$STATUS" == "notfound" ]]; then
-      log "$SCRIPT_NAME" "WARNING" "VmwareSource not found yet, waiting..."
-    else
-      log "$SCRIPT_NAME" "INFO" "Current status: $STATUS, waiting..."
-    fi
-    sleep 5
-  done
-  log "$SCRIPT_NAME" "ERROR" "VmwareSource did not become ready. Check your configuration."
-  kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" -o yaml | tee -a "$GENERAL_LOG_FILE"
-  echo "ERROR: VmwareSource did not become ready. Please check your configuration and try again."
-  exit 20
+  show_step_header "Step 4" "Wait for VmwareSource Ready"
+
+  local spinner_output
+  spinner_output=$(gum spin --spinner dot --title "Waiting for VmwareSource to be ready..." -- \
+    bash -c "
+      for i in {1..20}; do
+        STATUS=\$(kubectl get vmwaresource.migration vcsim -n '$HARVESTER_NAMESPACE' -o jsonpath='{.status.status}' 2>/dev/null || echo 'notfound')
+        if [[ \"\$STATUS\" == \"clusterReady\" ]]; then
+          exit 0
+        fi
+        sleep 5
+      done
+      exit 1
+    " 2>&1)
+
+  if [[ $? -eq 0 ]]; then
+    show_success "VmwareSource is ready"
+    log "$SCRIPT_NAME" "INFO" "VmwareSource is ready."
+  else
+    show_error "VmwareSource did not become ready"
+    kubectl get vmwaresource.migration vcsim -n "$HARVESTER_NAMESPACE" -o yaml | tee -a "$GENERAL_LOG_FILE"
+    log "$SCRIPT_NAME" "ERROR" "VmwareSource did not become ready."
+    exit 20
+  fi
 }
 
 create_virtual_machine_import() {
-  echo
-  echo "========== Step 5: Create VirtualMachineImport =========="
-  echo "We will now create the VirtualMachineImport resource in Harvester."
-  echo "This starts the migration of your VM from vSphere to Harvester."
-  log "$SCRIPT_NAME" "INFO" "Ensuring VirtualMachineImport resource exists for VM: $VM_NAME"
-  if ! kubectl get virtualmachineimport.migration "$VM_NAME" -n "$HARVESTER_NAMESPACE" &>/dev/null; then
-  cat <<EOF | kubectl apply -f -
+  show_step_header "Step 5" "Create VirtualMachineImport"
+
+  gum spin --spinner dot --title "Creating VirtualMachineImport for $VM_NAME..." -- \
+    bash -c "
+      if ! kubectl get virtualmachineimport.migration '$VM_NAME' -n '$HARVESTER_NAMESPACE' &>/dev/null; then
+        kubectl apply -f - <<'EOFVMI'
 apiVersion: migration.harvesterhci.io/v1beta1
 kind: VirtualMachineImport
 metadata:
   name: $VM_NAME
   namespace: $HARVESTER_NAMESPACE
 spec:
-  virtualMachineName: "$VM_NAME"
+  virtualMachineName: \"$VM_NAME\"
   $( [[ -n "$VM_FOLDER" ]] && echo "folder: \"$VM_FOLDER\"" )
   networkMapping:
-    - sourceNetwork: "$SRC_NET"
-      destinationNetwork: "$DST_NET"
+    - sourceNetwork: \"$SRC_NET\"
+      destinationNetwork: \"$DST_NET\"
   sourceCluster:
     name: vcsim
     namespace: $HARVESTER_NAMESPACE
     kind: VmwareSource
     apiVersion: migration.harvesterhci.io/v1beta1
-EOF
-    log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' created."
-    echo "Success: VirtualMachineImport created."
-  else
-    log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' already exists. Skipping creation."
-    echo "VirtualMachineImport already exists. Skipping."
-  fi
-}
+EOFVMI
+      fi
+    " || true
 
-start_vm_via_api() {
-  local vm_name="$1"
-  local namespace="${2:-$HARVESTER_NAMESPACE}"
-
-  echo
-  echo "========== Starting VM Post-Configuration =========="
-  log "$SCRIPT_NAME" "INFO" "Starting VM '$vm_name' after post-migration adjustments."
-
-  # Handle RestartRequired condition
-  if kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.conditions[?(@.type=="RestartRequired")].status}' | grep -q "True"; then
-    echo "  - VM requires restart due to spec changes. Cleaning up old VMI..."
-    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' requires restart. Deleting old VMI."
-    kubectl delete vmi "$vm_name" -n "$namespace" --ignore-not-found || true
-  fi
-
-  if ! send_harvester_vm_action "start" "$vm_name" "$namespace"; then
-    log "$SCRIPT_NAME" "ERROR" "Failed to send start command for VM '$vm_name'."
-    echo "ERROR: Failed to start the VM via API."
-    return 1
-  fi
-
-  if wait_for_vm_status "Running" "$vm_name" "$namespace" 300; then
-    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' started successfully."
-    echo "VM started successfully and is now Running."
-    return 0
-  else
-    log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' did not reach 'Running' state after start command."
-    echo "ERROR: VM did not become Running. Please check the Harvester UI."
-    return 1
-  fi
+  show_success "VirtualMachineImport created"
+  log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' created."
 }
 
 switch_vm_disks_to_sata() {
@@ -486,40 +548,28 @@ switch_vm_disks_to_sata() {
   local namespace="${2:-$HARVESTER_NAMESPACE}"
   local disk_names disk_count i disk_name current_bus
 
-  echo
-  echo "========== Step 7a: Adjust VM Disks =========="
-  echo "Checking and patching disks for VM '$vm_name'..."
-  log "$SCRIPT_NAME" "INFO" "Ensuring all disks for VM '$vm_name' use bus: sata"
+  show_step_header "Step 6a" "Adjust VM Disks"
 
-  disk_names=($(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
-  disk_count=${#disk_names[@]}
+  gum spin --spinner dot --title "Adjusting disk configuration for $vm_name..." -- \
+    bash -c "
+      disk_names=(\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.spec.template.spec.domain.devices.disks[*].name}' 2>/dev/null || true))
+      disk_count=\${#disk_names[@]}
 
-  if [[ "$disk_count" -eq 0 ]]; then
-    log "$SCRIPT_NAME" "WARNING" "No disks found for VM '$vm_name'. Skipping SATA patch."
-    echo "No disks found for VM. Skipping SATA patch."
-    return 0
-  fi
-
-  for ((i=0; i<disk_count; i++)); do
-    disk_name="${disk_names[$i]}"
-    current_bus=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath="{.spec.template.spec.domain.devices.disks[$i].disk.bus}" 2>/dev/null || echo "")
-    if [[ "$current_bus" != "sata" && -n "$current_bus" ]]; then
-      echo "  - Patching disk '$disk_name' (was: $current_bus) to SATA..."
-      log "$SCRIPT_NAME" "INFO" "Patching disk '$disk_name' (index $i) to use bus: sata (was: $current_bus)"
-      if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
-        -p="[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/$i/disk/bus', 'value':'sata'}]"; then
-        log "$SCRIPT_NAME" "ERROR" "Failed to patch disk '$disk_name' (index $i) to bus: sata"
-        echo "ERROR: Failed to patch disk $disk_name to bus: sata"
-        return 2
+      if [[ \$disk_count -eq 0 ]]; then
+        exit 0
       fi
-      echo "  Disk $disk_name patched to SATA."
-    else
-      echo "  - Disk $disk_name already uses SATA."
-      log "$SCRIPT_NAME" "INFO" "Disk '$disk_name' (index $i) already uses bus: sata"
-    fi
-  done
-  echo "All disks checked and set to SATA where needed."
-  return 0
+
+      for ((i=0; i<disk_count; i++)); do
+        current_bus=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath=\"{.spec.template.spec.domain.devices.disks[\$i].disk.bus}\" 2>/dev/null || echo '')
+        if [[ \"\$current_bus\" != \"sata\" && -n \"\$current_bus\" ]]; then
+          kubectl patch vm '$vm_name' -n '$namespace' --type='json' \
+            -p=\"[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/\$i/disk/bus', 'value':'sata'}]\" || true
+        fi
+      done
+    " || true
+
+  show_success "Disk configuration updated"
+  log "$SCRIPT_NAME" "INFO" "Ensured all disks for VM '$vm_name' use bus: sata"
 }
 
 ensure_vm_stopped() {
@@ -527,37 +577,35 @@ ensure_vm_stopped() {
   local namespace="$2"
   local status
 
-  echo
-  echo "========== Ensuring VM is Stopped =========="
-  echo "Checking VM '$vm_name' status before patching..."
-  log "$SCRIPT_NAME" "INFO" "Ensuring VM '$vm_name' is stopped."
-
   status=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.status.printableStatus}' 2>/dev/null || echo "NotFound")
 
   if [[ "$status" == "Running" ]]; then
     log "$SCRIPT_NAME" "INFO" "VM is running. Attempting to stop it."
+    show_info "VM is running. Stopping it gracefully..."
+
     if ! send_harvester_vm_action "stop" "$vm_name" "$namespace"; then
-      echo "  ERROR: Failed to send stop command. Aborting CPU adjustment."
+      show_error "Failed to send stop command."
       return 1
     fi
 
     if ! wait_for_vm_status "Stopped" "$vm_name" "$namespace"; then
-      log "$SCRIPT_NAME" "WARNING" "Graceful stop failed or timed out. Attempting forceStop."
-      echo "  - Graceful stop failed. Trying forceStop..."
+      show_warning "Graceful stop failed or timed out. Attempting forceStop..."
+      log "$SCRIPT_NAME" "WARNING" "Graceful stop failed. Trying forceStop."
+
       if ! send_harvester_vm_action "forceStop" "$vm_name" "$namespace" || \
          ! wait_for_vm_status "Stopped" "$vm_name" "$namespace"; then
-        echo "  ERROR: Failed to stop VM even with forceStop. Aborting CPU adjustment."
+        show_error "Failed to stop VM even with forceStop."
         return 1
       fi
     fi
     return 0
   elif [[ "$status" == "Stopped" ]]; then
     log "$SCRIPT_NAME" "INFO" "VM '$vm_name' is already stopped."
-    echo "  - VM is already stopped. Proceeding."
+    show_info "VM is already stopped."
     return 0
   else
-    log "$SCRIPT_NAME" "WARNING" "VM status is '$status', not running. Proceeding with caution."
-    echo "  - VM status is '$status'. Proceeding."
+    log "$SCRIPT_NAME" "WARNING" "VM status is '$status'."
+    show_warning "VM status is '$status'. Proceeding with caution."
     return 0
   fi
 }
@@ -572,127 +620,196 @@ adjust_vm_cpu_topology() {
     return 0
   fi
 
-  echo
-  echo "========== Adjusting VM CPU Topology =========="
-  log "$SCRIPT_NAME" "INFO" "Adjusting CPU topology for VM '$vm_name' to $desired_sockets sockets."
+  show_step_header "Step 6b" "Adjust VM CPU Topology"
 
   if ! ensure_vm_stopped "$vm_name" "$namespace"; then
     return 1
   fi
 
-  local current_sockets current_cores total_vcpus new_cores
-  current_sockets=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.cpu.sockets}')
-  current_cores=$(kubectl get vm "$vm_name" -n "$namespace" -o jsonpath='{.spec.template.spec.domain.cpu.cores}')
-  total_vcpus=$((current_sockets * current_cores))
+  gum spin --spinner dot --title "Adjusting CPU topology to $desired_sockets sockets..." -- \
+    bash -c "
+      current_sockets=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.spec.template.spec.domain.cpu.sockets}')
+      current_cores=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.spec.template.spec.domain.cpu.cores}')
+      total_vcpus=\$((current_sockets * current_cores))
 
-  echo "  - Current Topology: $total_vcpus vCPUs ($current_sockets sockets x $current_cores cores)"
-  log "$SCRIPT_NAME" "DEBUG" "Current topology: $total_vcpus vCPUs ($current_sockets sockets x $current_cores cores)"
+      if (( total_vcpus % $desired_sockets != 0 )); then
+        exit 1
+      fi
 
-  if (( total_vcpus % desired_sockets != 0 )); then
-    log "$SCRIPT_NAME" "ERROR" "Total vCPUs ($total_vcpus) is not divisible by desired sockets ($desired_sockets)."
-    echo "  ERROR: Cannot evenly distribute $total_vcpus vCPUs across $desired_sockets sockets. Skipping."
+      new_cores=\$((total_vcpus / $desired_sockets))
+
+      kubectl patch vm '$vm_name' -n '$namespace' --type='json' \
+        -p=\"[
+          {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/sockets', 'value':$desired_sockets},
+          {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/cores', 'value':\$new_cores}
+        ]\"
+    " || {
+    show_error "Failed to adjust CPU topology."
+    log "$SCRIPT_NAME" "ERROR" "Failed to patch VM '$vm_name' with new CPU topology."
+    return 1
+  }
+
+  show_success "CPU topology updated"
+  log "$SCRIPT_NAME" "INFO" "Successfully patched VM '$vm_name' CPU topology."
+}
+
+start_vm_via_api() {
+  local vm_name="$1"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
+
+  show_step_header "Step 7" "Starting VM Post-Configuration"
+
+  gum spin --spinner dot --title "Checking for restart requirements..." -- \
+    bash -c "
+      if kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.status.conditions[?(@.type==\"RestartRequired\")].status}' | grep -q 'True'; then
+        kubectl delete vmi '$vm_name' -n '$namespace' --ignore-not-found || true
+      fi
+    " || true
+
+  if ! send_harvester_vm_action "start" "$vm_name" "$namespace"; then
+    show_error "Failed to send start command for VM '$vm_name'."
+    log "$SCRIPT_NAME" "ERROR" "Failed to send start command for VM '$vm_name'."
     return 1
   fi
 
-  new_cores=$((total_vcpus / desired_sockets))
-  echo "  - New Topology:     $total_vcpus vCPUs ($desired_sockets sockets x $new_cores cores)"
-  log "$SCRIPT_NAME" "INFO" "New topology will be: $desired_sockets sockets, $new_cores cores."
-
-  echo "  - Applying patch to VM resource..."
-  if ! kubectl patch vm "$vm_name" -n "$namespace" --type='json' \
-    -p="[
-      {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/sockets', 'value':$desired_sockets},
-      {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/cores', 'value':$new_cores}
-    ]"; then
-    log "$SCRIPT_NAME" "ERROR" "Failed to patch VM '$vm_name' with new CPU topology."
-    echo "  ERROR: Failed to patch VM resource."
-    return 2
+  if wait_for_vm_status "Running" "$vm_name" "$namespace" 300; then
+    show_success "VM started successfully and is now Running"
+    log "$SCRIPT_NAME" "INFO" "VM '$vm_name' started successfully."
+    return 0
+  else
+    show_error "VM did not reach 'Running' state after start command"
+    log "$SCRIPT_NAME" "ERROR" "VM '$vm_name' did not reach 'Running' state."
+    return 1
   fi
-
-  log "$SCRIPT_NAME" "INFO" "Successfully patched VM '$vm_name' CPU topology."
-  echo "  Success: VM CPU topology updated."
-  return 0
 }
 
 cleanup_virtual_machine_import() {
   local vm_name="$1"
   local namespace="${2:-$HARVESTER_NAMESPACE}"
 
-  echo
-  echo "========== Cleaning up VirtualMachineImport =========="
-  log "$SCRIPT_NAME" "INFO" "Cleaning up VirtualMachineImport for VM '$vm_name'."
+  show_step_header "Step 8" "Cleaning up VirtualMachineImport"
 
-  if kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" &>/dev/null; then
-    kubectl delete virtualmachineimport.migration "$vm_name" -n "$namespace" --ignore-not-found
-    log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$vm_name' deleted."
-    echo "VirtualMachineImport resource cleaned up."
+  gum spin --spinner dot --title "Removing VirtualMachineImport resource..." -- \
+    bash -c "
+      if kubectl get virtualmachineimport.migration '$vm_name' -n '$namespace' &>/dev/null; then
+        kubectl delete virtualmachineimport.migration '$vm_name' -n '$namespace' --ignore-not-found || true
+      fi
+    " || true
+
+  show_success "VirtualMachineImport resource cleaned up"
+  log "$SCRIPT_NAME" "INFO" "Cleanup completed for VM '$vm_name'."
+}
+
+# Helper to pause before exit
+pause_before_exit() {
+  local duration="${1:-60}"
+  echo
+  gum style --border rounded --border-foreground 240 --padding "1 2" \
+    "$(gum style --foreground 240 "⏱ Session will close in $duration seconds")" \
+    "Press any key to exit now, or wait..."
+  
+  read -t "$duration" -n 1 -r || true
+  
+  if [[ $? -eq 0 ]]; then
+    gum style --foreground 46 "Exiting..."
   else
-    log "$SCRIPT_NAME" "INFO" "No VirtualMachineImport resource found for '$vm_name'."
-    echo "No VirtualMachineImport resource found. Skipping cleanup."
+    gum style --foreground 33 "Auto-closing session..."
   fi
 }
 
 # --- Main Workflow ---
 
 main() {
-  log "$SCRIPT_NAME" "INFO" "Hello, this is the vSphere-to-Harvester Migration Tool!"
-  log "$SCRIPT_NAME" "INFO" "Its meant to orchestrate migrating a VM from vSphere to Harvester."
-  log "$SCRIPT_NAME" "INFO" "Using Verbose mode: $VERBOSE"
+  log "$SCRIPT_NAME" "INFO" "Starting vSphere-to-Harvester Migration Tool"
 
   setup_log_rotation
+  check_gum_available
+
+  gum style --border double --border-foreground 212 --padding "1 2" \
+    "$(gum style --foreground 212 --bold 'vSphere → Harvester Migration')" \
+    "$(gum style --foreground 240 'Quickly and safely migrate VMs')"
+
+  echo
 
   # Load config if present
   if [[ -f "$CONFIG_FILE" ]]; then
-    log "$SCRIPT_NAME" "INFO" "Loading configuration from $CONFIG_FILE"
-    # shellcheck source=/dev/null
+    show_info "Loading configuration from $CONFIG_FILE"
     source "$CONFIG_FILE"
   fi
 
-  # Show and adjust config at the very start
-  adjust_config_menu
-  if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
-    echo "Migration aborted by user."
-    log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
-    exit 0
+  # Show and adjust config (unless --skip-config-menu was passed)
+  if [[ "$SKIP_CONFIG_MENU" -ne 1 ]]; then
+    adjust_config_menu
+    if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
+      gum style --foreground 196 "Migration cancelled by user"
+      log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
+      exit 0
+    fi
+
+    # Save config
+    save_config
+    show_success "Configuration saved"
+
+    echo
+
+    # Try to run in tmux (if not already in tmux)
+    if [[ -z "${TMUX:-}" ]]; then
+      run_in_tmux_session "false"
+      exit $?
+    fi
+  else
+    # Re-invoked in tmux, config is already loaded above
+    show_info "Configuration loaded from saved file"
+    echo
   fi
 
-  # Save config
-  save_config
-
-  # Step 1: Prerequisite check
+  # Migration workflow
   check_prerequisites
-
-  # Step 2: Create vSphere secret
   create_vsphere_secret
-
-  # Step 3: Create VmwareSource
   create_vmware_source
-
-  # Step 4: Wait for VmwareSource to be ready
   wait_for_vmware_source_ready
-
-  # Step 5: Create VirtualMachineImport
   create_virtual_machine_import
 
-  # Step 6: Monitor import status
+  echo
+
+  show_step_header "Step 5" "Monitor Import Status"
   import_monitor_status "$VM_NAME" "$HARVESTER_NAMESPACE"
 
-  # Step 7: Post-import actions
+  echo
+
   switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
-  
-  # TEST: api call to early? \o/
-  sleep 60
-  start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
 
+  echo
+
+  gum spin --spinner dot --title "Waiting 60 seconds before VM startup..." -- sleep 60
+
+  echo
+
+  start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
   cleanup_virtual_machine_import "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
-  echo "========== Migration workflow complete! =========="
-  echo "Your VM '$VM_NAME' has been migrated to Harvester."
-  echo "You can now manage it via the Harvester UI."
+
+  gum style --border double --border-foreground 46 --padding "1 2" \
+    "$(gum style --foreground 46 --bold 'Migration Complete!')" \
+    "" \
+    "VM '$VM_NAME' has been migrated to Harvester." \
+    "" \
+    "$(gum style --foreground 226 '⚠ Next Steps:')" \
+    "  1. Verify the VM is running in Harvester" \
+    "  2. Test VM connectivity and services" \
+    "  3. Clean up/decommission the VM in vSphere" \
+    "" \
+    "Manage the VM via the Harvester UI at ${HARVESTER_URL}"
+
+  echo
+
   log "$SCRIPT_NAME" "INFO" "Migration process completed for VM: $VM_NAME"
   log "$SCRIPT_NAME" "DEBUG" "Script finished"
+
+  # Keep session open for 60 seconds or until user presses a key
+  pause_before_exit 60
 }
 
 main "$@"
