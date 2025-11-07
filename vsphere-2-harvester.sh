@@ -35,9 +35,11 @@ DEFAULT_VSPHERE_DC="ASP"
 DEFAULT_SRC_NET="RHV-Testing"
 DEFAULT_DST_NET="default/rhv-testing"
 DEFAULT_NAMESPACE="har-fasp-02"
+DEFAULT_KUBECONFIG="config_asp-vic02"
 POST_MIGRATE_SOCKETS="2"
 
 HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
+KUBECONFIG_NAME="${KUBECONFIG_NAME:-$DEFAULT_KUBECONFIG}"
 
 # --- Helper: Show usage/help ---
 show_help() {
@@ -324,10 +326,14 @@ run_in_tmux_session() {
   fi
 
   log "$SCRIPT_NAME" "INFO" "Creating tmux session: $session_name"
-  tmux new-session -d -s "$session_name" -x 200 -y 50
-
-  tmux send-keys -t "$session_name" \
-    "export VERBOSE='$VERBOSE'; cd '$(pwd)'; '$0' --verbose" C-m
+  tmux new-session -d -s "$session_name" -x 200 -y 50 -c "$(pwd)" \
+    bash --noprofile --norc -i -c "
+      source /etc/bashrc 2>/dev/null || true
+      export SKIP_CONFIG_MENU=1
+      export KUBECONFIG=\"\${HOME}/.kube/configs/${KUBECONFIG_NAME}\"
+      source <(kubectl completion bash) 2>/dev/null || true
+      exec '$0' --verbose
+    "
 
   if [[ "$detach_mode" == "true" ]]; then
     show_info "Migration started in tmux session: $session_name (detached)"
@@ -336,7 +342,7 @@ run_in_tmux_session() {
     return 0
   else
     show_info "Migration starting in tmux session: $session_name (attaching)..."
-    sleep 1
+    sleep 2
     tmux attach-session -t "$session_name"
     return 0
   fi
