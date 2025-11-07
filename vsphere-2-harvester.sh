@@ -118,7 +118,9 @@ log() {
     echo "$formatted" >> "$LOG_DIR/${VM_NAME}.log"
   fi
 
-  echo "$formatted"
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "$formatted"
+  fi
 }
 
 setup_log_rotation() {
@@ -163,30 +165,30 @@ show_step_header() {
   local step="$1"
   local title="$2"
   gum style --border double --border-foreground 57 --padding "1 2" \
-    "$(gum style --foreground 57 --bold "📋 $step: $title")"
+    "$(gum style --foreground 57 --bold "$step: $title")"
 }
 
 show_success() {
   local message="$1"
-  gum style --foreground 46 "✓ $message"
+  gum style --foreground 46 "[OK] $message"
   log "$SCRIPT_NAME" "INFO" "$message"
 }
 
 show_error() {
   local message="$1"
-  gum style --foreground 196 "✗ $message"
+  gum style --foreground 196 "[ERROR] $message"
   log "$SCRIPT_NAME" "ERROR" "$message"
 }
 
 show_info() {
   local message="$1"
-  gum style --foreground 33 "ℹ $message"
+  gum style --foreground 33 "[INFO] $message"
   log "$SCRIPT_NAME" "INFO" "$message"
 }
 
 show_warning() {
   local message="$1"
-  gum style --foreground 226 "⚠ $message"
+  gum style --foreground 226 "[WARNING] $message"
   log "$SCRIPT_NAME" "WARNING" "$message"
 }
 
@@ -241,10 +243,10 @@ adjust_config_menu() {
       --header "$(gum style --foreground 212 --bold 'Migration Configuration')" \
       --height 18 \
       "1) Harvester API URL: ${HARVESTER_URL:-(not set)}" \
-      "2) Harvester Access Key: ${CATTLE_ACCESS_KEY:+✓ set}" \
-      "3) Harvester Secret Key: ${CATTLE_SECRET_KEY:+✓ set}" \
+      "2) Harvester Access Key: ${CATTLE_ACCESS_KEY:+[set]}" \
+      "3) Harvester Secret Key: ${CATTLE_SECRET_KEY:+[set]}" \
       "4) vSphere User: ${VSPHERE_USER:-(not set)}" \
-      "5) vSphere Password: ${VSPHERE_PASS:+✓ set}" \
+      "5) vSphere Password: ${VSPHERE_PASS:+[set]}" \
       "6) vSphere Endpoint: ${VSPHERE_ENDPOINT:-(not set)}" \
       "7) vSphere Datacenter: ${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" \
       "8) Source Network: ${SRC_NET:-$DEFAULT_SRC_NET}" \
@@ -253,8 +255,8 @@ adjust_config_menu() {
       "11) VM Folder: ${VM_FOLDER:-(optional)}" \
       "12) Namespace: ${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" \
       "13) CPU Sockets: ${POST_MIGRATE_SOCKETS:-2}" \
-      "$(gum style --foreground 46 '✓ Continue')" \
-      "$(gum style --foreground 196 '✗ Cancel')")
+      "$(gum style --foreground 46 '[Continue]')" \
+      "$(gum style --foreground 196 '[Cancel]')")
 
     if [[ $? -eq 130 ]]; then
       USER_ABORTED=1
@@ -262,8 +264,8 @@ adjust_config_menu() {
     fi
 
     case "$choice" in
-      *"Continue"*) break ;;
-      *"Cancel"*) USER_ABORTED=1; break ;;
+      *"[Continue]"*) break ;;
+      *"[Cancel]"*) USER_ABORTED=1; break ;;
       *"1)"*) prompt_for_var "HARVESTER_URL" "Harvester API URL" "${HARVESTER_URL:-}" ;;
       *"2)"*) prompt_for_var "CATTLE_ACCESS_KEY" "Harvester Access Key" "${CATTLE_ACCESS_KEY:-}" ;;
       *"3)"*) prompt_for_var "CATTLE_SECRET_KEY" "Harvester Secret Key" "${CATTLE_SECRET_KEY:-}" 1 ;;
@@ -705,7 +707,7 @@ pause_before_exit() {
   local duration="${1:-60}"
   echo
   gum style --border rounded --border-foreground 240 --padding "1 2" \
-    "$(gum style --foreground 240 "⏱ Session will close in $duration seconds")" \
+    "$(gum style --foreground 240 "Session will close in $duration seconds")" \
     "Press any key to exit now, or wait..."
   
   read -t "$duration" -n 1 -r || true
@@ -726,7 +728,7 @@ main() {
   check_gum_available
 
   gum style --border double --border-foreground 212 --padding "1 2" \
-    "$(gum style --foreground 212 --bold 'vSphere → Harvester Migration')" \
+    "$(gum style --foreground 212 --bold 'vSphere -> Harvester Migration')" \
     "$(gum style --foreground 240 'Quickly and safely migrate VMs')"
 
   echo
@@ -792,11 +794,11 @@ main() {
   echo
 
   gum style --border double --border-foreground 46 --padding "1 2" \
-    "$(gum style --foreground 46 --bold 'Migration Complete!')" \
+    "$(gum style --foreground 46 --bold 'Migration Complete')" \
     "" \
     "VM '$VM_NAME' has been migrated to Harvester." \
     "" \
-    "$(gum style --foreground 226 '⚠ Next Steps:')" \
+    "$(gum style --foreground 226 'IMPORTANT - Next Steps:')" \
     "  1. Verify the VM is running in Harvester" \
     "  2. Test VM connectivity and services" \
     "  3. Clean up/decommission the VM in vSphere" \
