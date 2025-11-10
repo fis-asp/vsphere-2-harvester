@@ -266,19 +266,19 @@ adjust_config_menu() {
     case "$choice" in
       *"[Continue]"*) break ;;
       *"[Cancel]"*) USER_ABORTED=1; break ;;
-      *"1)"*) prompt_for_var "HARVESTER_URL" "Harvester API URL" "${HARVESTER_URL:-}" ;;
-      *"2)"*) prompt_for_var "CATTLE_ACCESS_KEY" "Harvester Access Key" "${CATTLE_ACCESS_KEY:-}" ;;
-      *"3)"*) prompt_for_var "CATTLE_SECRET_KEY" "Harvester Secret Key" "${CATTLE_SECRET_KEY:-}" 1 ;;
-      *"4)"*) prompt_for_var "VSPHERE_USER" "vSphere Username" "${VSPHERE_USER:-}" ;;
-      *"5)"*) prompt_for_var "VSPHERE_PASS" "vSphere Password" "${VSPHERE_PASS:-}" 1 ;;
-      *"6)"*) prompt_for_var "VSPHERE_ENDPOINT" "vSphere Endpoint" "${VSPHERE_ENDPOINT:-}" ;;
-      *"7)"*) prompt_for_var "VSPHERE_DC" "Datacenter" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" ;;
-      *"8)"*) prompt_for_var "SRC_NET" "Source Network" "${SRC_NET:-$DEFAULT_SRC_NET}" ;;
-      *"9)"*) prompt_for_var "DST_NET" "Destination Network" "${DST_NET:-$DEFAULT_DST_NET}" ;;
-      *"10)"*) prompt_for_var "VM_NAME" "VM Name" "${VM_NAME:-}" ;;
-      *"11)"*) prompt_for_var "VM_FOLDER" "VM Folder (optional)" "${VM_FOLDER:-}" ;;
-      *"12)"*) prompt_for_var "HARVESTER_NAMESPACE" "Namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" ;;
-      *"13)"*) prompt_for_var "POST_MIGRATE_SOCKETS" "Socket Count" "${POST_MIGRATE_SOCKETS:-2}" ;;
+      "1)"*) prompt_for_var "HARVESTER_URL" "Harvester API URL" "${HARVESTER_URL:-}" ;;
+      "2)"*) prompt_for_var "CATTLE_ACCESS_KEY" "Harvester Access Key" "${CATTLE_ACCESS_KEY:-}" ;;
+      "3)"*) prompt_for_var "CATTLE_SECRET_KEY" "Harvester Secret Key" "${CATTLE_SECRET_KEY:-}" 1 ;;
+      "4)"*) prompt_for_var "VSPHERE_USER" "vSphere Username" "${VSPHERE_USER:-}" ;;
+      "5)"*) prompt_for_var "VSPHERE_PASS" "vSphere Password" "${VSPHERE_PASS:-}" 1 ;;
+      "6)"*) prompt_for_var "VSPHERE_ENDPOINT" "vSphere Endpoint" "${VSPHERE_ENDPOINT:-}" ;;
+      "7)"*) prompt_for_var "VSPHERE_DC" "Datacenter" "${VSPHERE_DC:-$DEFAULT_VSPHERE_DC}" ;;
+      "8)"*) prompt_for_var "SRC_NET" "Source Network" "${SRC_NET:-$DEFAULT_SRC_NET}" ;;
+      "9)"*) prompt_for_var "DST_NET" "Destination Network" "${DST_NET:-$DEFAULT_DST_NET}" ;;
+      "10)"*) prompt_for_var "VM_NAME" "VM Name" "${VM_NAME:-}" ;;
+      "11)"*) prompt_for_var "VM_FOLDER" "VM Folder (optional)" "${VM_FOLDER:-}" ;;
+      "12)"*) prompt_for_var "HARVESTER_NAMESPACE" "Namespace" "${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}" ;;
+      "13)"*) prompt_for_var "POST_MIGRATE_SOCKETS" "Socket Count" "${POST_MIGRATE_SOCKETS:-2}" ;;
     esac
   done
 }
