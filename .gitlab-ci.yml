@@ -13,4 +13,5 @@ include:
       use-job-token: false
       alt-token: "$PUSH_TOKEN"
       auto-commit-enable: true
+      prune-missing-enable: true
   - component: $CI_SERVER_FQDN/fis-asp/intern/technical-services/team-8/gitlab/asp8-ci-cd-templates/template-secret-scan@v1.11.5
