@@ -93,6 +93,7 @@ import_monitor_status() {
             max_wait=$(( max_wait * 3 / 4 ))
             ;;
         *)
+            # exit retry block if state is wether sourceReady,diskImageSubmitted nor virtualMachineCreated
             retry=0
             ;;
     esac
