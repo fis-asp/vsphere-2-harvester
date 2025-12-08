@@ -202,8 +202,6 @@ confirm_action() {
 }
 
 
-# Kubernetes RFC 1123 label validation (lowercase alphanumeric or '-', 1–63 chars,
-# must start and end with alphanumeric)
 is_rfc1123() {
     local name="$1"
     local max_length=63
@@ -221,15 +219,14 @@ is_rfc1123() {
     # 3. Regex check for RFC 1123 compliance
     # ^[a-z0-9]        -> Must start with alphanumeric
     # (...)?           -> Makes the rest optional (allows single-char names like "a")
-    # [-a-z0-9]*       -> Middle part (hyphens allowed)
+    # [-a-z0-9]* -> Middle part (hyphens allowed)
     # [a-z0-9]$        -> Must end with alphanumeric
-    if [ ! "$name" =~ ^[a-z0-9?$ ]]; then
+    if [[ ! "$name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
         return 1
     fi
 
     return 0
 }
-
 
 prompt_for_var() {
   local var="$1"
