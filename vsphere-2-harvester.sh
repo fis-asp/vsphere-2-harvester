@@ -370,7 +370,8 @@ check_tmux_available() {
 }
 
 run_in_tmux_session() {
-  local session_name="${TMUX_SESSION_PREFIX}-${VM_NAME}"
+  local safe_vm_name="${VM_NAME//./_}"
+  local session_name="${TMUX_SESSION_PREFIX}-${safe_vm_name}"
   local detach_mode="${1:-false}"
 
   if [[ -n "${TMUX:-}" ]]; then
