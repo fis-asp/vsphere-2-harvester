@@ -201,7 +201,33 @@ confirm_action() {
   fi
 }
 
-# --- Refactored: prompt_for_var using gum ---
+
+is_rfc1123() {
+    local name="$1"
+    local max_length=63
+
+    # 1. Check if the string is empty
+    if [[ -z "$name" ]]; then
+        return 1
+    fi
+
+    # 2. Check the maximum length
+    if [[ ${#name} -gt $max_length ]]; then
+        return 1
+    fi
+
+    # 3. Regex check for RFC 1123 compliance
+    # ^[a-z0-9]        -> Must start with alphanumeric
+    # (...)?           -> Makes the rest optional (allows single-char names like "a")
+    # [-a-z0-9]* -> Middle part (hyphens allowed)
+    # [a-z0-9]$        -> Must end with alphanumeric
+    if [[ ! "$name" =~ ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$ ]]; then
+        return 1
+    fi
+
+    return 0
+}
+
 prompt_for_var() {
   local var="$1"
   local prompt="$2"
@@ -210,28 +236,57 @@ prompt_for_var() {
   local input
   local current="${!var:-}"
 
-  if [[ "$secret" == "1" ]]; then
-    input=$(gum input --password --placeholder "$prompt")
-  else
-    input=$(gum input \
-      --placeholder "$prompt" \
-      --value "${current}" \
-      --width 70)
-  fi
+  while true; do
+    if [[ "$secret" == "1" ]]; then
+      input=$(gum input --password --placeholder "$prompt")
+    else
+      input=$(gum input \
+        --placeholder "$prompt" \
+        --value "${current}" \
+        --width 70)
+    fi
 
-  if [[ $? -eq 130 ]]; then
-    return 1
-  fi
+    if [[ $? -eq 130 ]]; then
+      return 1
+    fi
 
-  if [[ -n "$input" ]]; then
-    export "$var"="$input"
-    log "$SCRIPT_NAME" "INFO" "$var set to user input"
-  elif [[ -n "$current" ]]; then
-    export "$var"="$current"
-  else
-    export "$var"="$default"
-  fi
+    # Decide candidate (input > current > default)
+    local candidate
+    if [[ -n "$input" ]]; then
+      candidate="$input"
+    elif [[ -n "$current" ]]; then
+      candidate="$current"
+    else
+      candidate="$default"
+    fi
+
+    # Only validate when setting VM_NAME (Kubernetes RFC 1123 label)
+    if [[ "$var" == "VM_NAME" ]]; then
+      # IMPORTANT: No normalization; validate exactly what the user entered/chosen.
+      if ! is_rfc1123 "$candidate"; then
+        gum style --foreground 196 "Invalid Kubernetes name: '$candidate'"
+        gum style --foreground 244 "Must comply with RFC 1123 label: lowercase alphanumeric or '-', 1–63 characters, starting and ending with an alphanumeric."
+        gum style --foreground 214 "Please rename the VMware VM to a compliant name (-> no fqdn -> e.g. bransible, vm01, ...) before proceeding."
+        # Re-prompt
+        continue
+      fi
+    fi
+
+    # Export using original assignment semantics + logging
+    if [[ -n "$input" ]]; then
+      export "$var"="$input"
+      log "$SCRIPT_NAME" "INFO" "$var set to user input"
+    elif [[ -n "$current" ]]; then
+      export "$var"="$current"
+    else
+      export "$var"="$default"
+    fi
+
+    # Done
+    break
+  done
 }
+
 
 # --- Refactored: adjust_config_menu using gum ---
 adjust_config_menu() {
