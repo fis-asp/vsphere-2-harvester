@@ -684,7 +684,7 @@ adjust_vm_cpu_topology() {
     return 1
   fi
 
-  gum spin --spinner dot --title "Adjusting CPU topology to $desired_sockets sockets..." -- \
+  gum spin --spinner dot --title "Adjusting CPU topology to $desired_sockets sockets and setting eviction strategy..." -- \
     bash -c "
       current_sockets=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.spec.template.spec.domain.cpu.sockets}')
       current_cores=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath='{.spec.template.spec.domain.cpu.cores}')
@@ -699,16 +699,17 @@ adjust_vm_cpu_topology() {
       kubectl patch vm '$vm_name' -n '$namespace' --type='json' \
         -p=\"[
           {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/sockets', 'value':$desired_sockets},
-          {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/cores', 'value':\$new_cores}
+          {'op': 'replace', 'path': '/spec/template/spec/domain/cpu/cores', 'value':\$new_cores},
+          {'op': 'add', 'path': '/spec/template/spec/evictionStrategy', 'value':'LiveMigrateIfPossible'}
         ]\"
     " || {
-    show_error "Failed to adjust CPU topology."
-    log "$SCRIPT_NAME" "ERROR" "Failed to patch VM '$vm_name' with new CPU topology."
+    show_error "Failed to adjust CPU topology and eviction strategy."
+    log "$SCRIPT_NAME" "ERROR" "Failed to patch VM '$vm_name' with new CPU topology and eviction strategy."
     return 1
   }
 
-  show_success "CPU topology updated"
-  log "$SCRIPT_NAME" "INFO" "Successfully patched VM '$vm_name' CPU topology."
+  show_success "CPU topology and eviction strategy updated"
+  log "$SCRIPT_NAME" "INFO" "Successfully patched VM '$vm_name' CPU topology and eviction strategy."
 }
 
 start_vm_via_api() {
