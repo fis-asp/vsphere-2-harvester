@@ -1,4 +1,7 @@
 #!/bin/bash
+# Script: create-customer_namespaces.sh
+# Description: Createsone or more customer namespaces for vm deployment.
+# Author: FOERSTERF with the help of Gemini
 
 # Initialize variables
 DRY_RUN=false
