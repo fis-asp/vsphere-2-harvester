@@ -1,9 +1,10 @@
 #!/bin/bash
+#
 # Script: create-customer_namespaces.sh
-# Description: Createsone or more customer namespaces for vm deployment.
+# Description: Creates one or more customer namespaces for vm deployment.
 # Author: FOERSTERF with the help of Gemini
 
-# Initialize variables
+# === Defaults ===
 DRY_RUN=false
 
 # Function to display usage help
@@ -16,7 +17,7 @@ usage() {
     exit 1
 }
 
-# Parse command line arguments
+# === Argument Parsing ===
 while [[ "$#" -gt 0 ]]; do
     case $1 in
         --customers) customers="$2"; shift ;;

@@ -96,7 +96,7 @@ if [ "$FORCE" -eq 0 ]; then
     exit 2
   fi
 else
-  # Inform user that we are in update mode
+  # Inform user that he is in update mode
   if kubectl -n "$NAMESPACE" get net-attach-def "$NAD_NAME" >/dev/null 2>&1; then
      echo "Info: NAD exists. Force flag set. Updating..."
   fi
