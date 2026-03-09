@@ -601,7 +601,7 @@ EOFVMI
   log "$SCRIPT_NAME" "INFO" "VirtualMachineImport '$VM_NAME' created."
 }
 
-switch_vm_disks_to_sata() {
+switch_vm_disks_to_virtio() {
   local vm_name="$1"
   local namespace="${2:-$HARVESTER_NAMESPACE}"
   local disk_names disk_count i disk_name current_bus
@@ -619,15 +619,15 @@ switch_vm_disks_to_sata() {
 
       for ((i=0; i<disk_count; i++)); do
         current_bus=\$(kubectl get vm '$vm_name' -n '$namespace' -o jsonpath=\"{.spec.template.spec.domain.devices.disks[\$i].disk.bus}\" 2>/dev/null || echo '')
-        if [[ \"\$current_bus\" != \"sata\" && -n \"\$current_bus\" ]]; then
+        if [[ \"\$current_bus\" != \"virtio\" && -n \"\$current_bus\" ]]; then
           kubectl patch vm '$vm_name' -n '$namespace' --type='json' \
-            -p=\"[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/\$i/disk/bus', 'value':'sata'}]\" || true
+            -p=\"[{'op': 'replace', 'path': '/spec/template/spec/domain/devices/disks/\$i/disk/bus', 'value':'virtio'}]\" || true
         fi
       done
     " || true
 
   show_success "Disk configuration updated"
-  log "$SCRIPT_NAME" "INFO" "Ensured all disks for VM '$vm_name' use bus: sata"
+  log "$SCRIPT_NAME" "INFO" "Ensured all disks for VM '$vm_name' use bus: virtio"
 }
 
 ensure_vm_stopped() {
@@ -836,7 +836,7 @@ main() {
 
   echo
 
-  switch_vm_disks_to_sata "$VM_NAME" "$HARVESTER_NAMESPACE"
+  switch_vm_disks_to_virtio "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
 
   echo
