@@ -38,7 +38,6 @@ DEFAULT_NAMESPACE="har-fasp-02"
 DEFAULT_KUBECONFIG="config_asp-vic02"
 POST_MIGRATE_SOCKETS="2"
 
-HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
 KUBECONFIG_NAME="${KUBECONFIG_NAME:-$DEFAULT_KUBECONFIG}"
 
 # --- Helper: Show usage/help ---
@@ -49,11 +48,12 @@ $SCRIPT_NAME
 Quickly and safely migrate VMware vSphere VMs to Harvester.
 
 Usage:
-  $0 [--verbose|-v] [--help|-h]
+  $0 [--verbose|-v] [--help|-h] [--skip-config-menu]
 
 Options:
   -v, --verbose   Enable verbose (DEBUG) logging
   -h, --help      Show this help message and exit
+  --skip-config-menu  Skip interactive configuration menu 
 
 Config file: $CONFIG_FILE
 Logs:        $GENERAL_LOG_FILE
@@ -89,7 +89,7 @@ if ! mkdir -p "$LOG_DIR"; then
   exit 2
 fi
 
-# --- Logging function ---
+# --- Logging function --- 
 log() {
   local label="$1"
   local level="$2"
@@ -288,8 +288,7 @@ prompt_for_var() {
 }
 
 
-# --- Refactored: adjust_config_menu using gum ---
-adjust_config_menu() {
+show_config_menu() {
   USER_ABORTED=0
 
   while true; do
@@ -488,17 +487,28 @@ wait_for_vm_status() {
 check_prerequisites() {
   show_step_header "Step 1" "Prerequisite Check"
 
-  if ! gum spin --spinner dot --title "Checking kubectl..." -- \
-      bash -c "command -v kubectl &>/dev/null"; then
-    show_error "kubectl not found. Please install and configure it."
-    log "$SCRIPT_NAME" "ERROR" "kubectl not found. Exiting."
+  if ! gum spin --spinner dot --title "Checking required tools (kubectl, uv)..." -- \
+      bash -c "command -v kubectl &>/dev/null && command -v uv &>/dev/null"; then
+    
+    # Check which specific tool is missing for better error messaging
+    if ! command -v kubectl &>/dev/null; then
+      show_error "kubectl not found. Please install and configure it."
+      log "$SCRIPT_NAME" "ERROR" "kubectl not found. Exiting."
+    fi
+    if ! command -v uv &>/dev/null; then
+      show_error "uv packaging tool not found. Please install it."
+      log "$SCRIPT_NAME" "ERROR" "uv packaging tool not found. Exiting."
+    fi
     exit 10
   fi
 
-  show_success "kubectl is available and configured"
+  show_success "All required tools are available (kubectl, uv)"
   log "$SCRIPT_NAME" "INFO" "kubectl found: $(command -v kubectl)"
+  log "$SCRIPT_NAME" "INFO" "uv found: $(command -v uv)"
   log "$SCRIPT_NAME" "DEBUG" "kubectl version: $(kubectl version --client 2>&1)"
+  log "$SCRIPT_NAME" "DEBUG" "uv version: $(uv --version 2>&1)"
 }
+
 
 create_vsphere_secret() {
   show_step_header "Step 2" "Create vSphere Secret"
@@ -759,6 +769,13 @@ cleanup_virtual_machine_import() {
   log "$SCRIPT_NAME" "INFO" "Cleanup completed for VM '$vm_name'."
 }
 
+vm_exists_in_harvester() {
+  local vm_name="$1"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
+
+  kubectl get vm "$vm_name" -n "$namespace" &>/dev/null
+}
+
 # Helper to pause before exit
 pause_before_exit() {
   local duration="${1:-60}"
@@ -775,6 +792,75 @@ pause_before_exit() {
     gum style --foreground 33 "Auto-closing session..."
   fi
 }
+
+
+annotate_with_vsphere_attributes() {
+  local vm_name="$1"
+  local namespace="${2:-$HARVESTER_NAMESPACE}"
+  local vsphere_user="$VSPHERE_USER"
+  local vsphere_pass="$VSPHERE_PASS"
+  local vsphere_endpoint="$VSPHERE_ENDPOINT"
+
+  log "$SCRIPT_NAME" "INFO" "Fetching vSphere custom attributes for VM '$vm_name'."
+
+  local attr_output
+
+  if ! attr_output=$(
+     uv run custom_attributes.py \
+      --endpoint "$vsphere_endpoint" \
+      -u "$vsphere_user" \
+      -p "$vsphere_pass" \
+      -o 443 \
+      -nossl \
+      -v "$vm_name" 2>/dev/null
+  ); then
+    show_warning "Failed to retrieve vSphere custom attributes — skipping annotations."
+    log "$SCRIPT_NAME" "WARNING" "Python script failed for VM '$vm_name'."
+    return 0
+  fi
+
+  if [[ -z "$attr_output" ]]; then
+    show_info "No vSphere custom attributes found for VM '$vm_name'."
+    return 0
+  fi
+
+  local -a annotations=()
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    local key="${line%%=*}"
+    local value="${line#*=}"
+
+    # If the value contains whitespace, wrap it in quotes.
+    if [[ "$value" =~ [[:space:]] ]]; then
+      value="\"$value\""
+    fi
+
+    annotations+=("vsphere.migration/${key}=${value}")
+  done <<< "$attr_output"
+
+  log "$SCRIPT_NAME" "DEBUG" "Parsed annotations: ${annotations[*]}"
+
+  if [[ ${#annotations[@]} -eq 0 ]]; then
+    show_info "No annotations to apply for VM '$vm_name'."
+    return 0
+  fi
+
+  if ! vm_exists_in_harvester "$vm_name" "$namespace"; then
+    show_warning "VM '$vm_name' does not exist in namespace '$namespace' - skipping annotations."
+    log "$SCRIPT_NAME" "WARNING" "Skipping annotations because VM '$vm_name' was not found in '$namespace'."
+    return 0
+  fi
+
+  if kubectl annotate vm "$vm_name" -n "$namespace" \
+      "${annotations[@]}" --overwrite 2>>"$GENERAL_LOG_FILE"; then
+    show_success "Applied ${#annotations[@]} vSphere custom attribute(s) as annotations"
+    log "$SCRIPT_NAME" "INFO" "Annotations applied to VM '$vm_name'."
+  else
+    show_warning "kubectl annotate failed — check $GENERAL_LOG_FILE for details."
+    log "$SCRIPT_NAME" "WARNING" "Failed to apply annotations to VM '$vm_name'."
+  fi
+}
+
 
 # --- Main Workflow ---
 
@@ -798,7 +884,7 @@ main() {
 
   # Show and adjust config (unless --skip-config-menu was passed)
   if [[ "$SKIP_CONFIG_MENU" -ne 1 ]]; then
-    adjust_config_menu
+    show_config_menu
     if [[ "${USER_ABORTED:-0}" -eq 1 ]]; then
       gum style --foreground 196 "Migration cancelled by user"
       log "$SCRIPT_NAME" "INFO" "Migration aborted by user at config menu."
@@ -813,8 +899,8 @@ main() {
 
     # Try to run in tmux (if not already in tmux)
     if [[ -z "${TMUX:-}" ]]; then
-      run_in_tmux_session "false"
-      exit $?
+      run_in_tmux_session "false" 
+      exit $? 
     fi
   else
     # Re-invoked in tmux, config is already loaded above
@@ -838,7 +924,6 @@ main() {
 
   switch_vm_disks_to_virtio "$VM_NAME" "$HARVESTER_NAMESPACE"
   adjust_vm_cpu_topology "$VM_NAME" "$HARVESTER_NAMESPACE" "$POST_MIGRATE_SOCKETS"
-
   echo
 
   gum spin --spinner dot --title "Waiting 60 seconds before VM startup..." -- sleep 60
@@ -846,6 +931,7 @@ main() {
   echo
 
   start_vm_via_api "$VM_NAME" "$HARVESTER_NAMESPACE"
+  annotate_with_vsphere_attributes "$VM_NAME" "$HARVESTER_NAMESPACE"
   cleanup_virtual_machine_import "$VM_NAME" "$HARVESTER_NAMESPACE"
 
   echo
