@@ -13,6 +13,8 @@ It is designed for **production environments**, with robust logging, error handl
 - **Automated Migration Workflow**
   - Migrates VMware vSphere VMs into Harvester with minimal manual steps.
   - Handles VM network mapping, datacenter selection, and optional folder configuration.
+  - Supports multiple named **vCenter profiles**, **Harvester profiles**, and **migration profiles** stored in HashiCorp Vault.
+  - Uses wizard-driven flows to configure Vault, add profiles, list stored profiles, remove profiles, and run migrations.
   - Supports **namespace‑aware deployments**: all Kubernetes resources (Secrets, `VmwareSource`, `VirtualMachineImport`) are created in the namespace of your choice.
 
 - **Logging & Auditing**
@@ -27,8 +29,10 @@ It is designed for **production environments**, with robust logging, error handl
 
 - **User‑Friendly & Secure**
   - Interactive prompts with defaults and examples.
+  - Runtime selection of the migration profile to use for the current VM import.
   - Sensitive values (e.g., API keys, passwords) are masked in prompts and logs.
-  - Configuration is persisted in `~/.vsphere2harvester.conf` for repeatable runs.
+  - Credentials, kubeconfigs, and mapping defaults are stored in **HashiCorp Vault**, not in host-local config files.
+  - The only local persistent file is the ignored bootstrap file `.vault-bootstrap`, which contains Vault connection details and AppRole bootstrap credentials.
 
 - **Post‑Import Enhancements**
   - Automatically switches VM disks to **SATA bus** for compatibility.
@@ -46,9 +50,14 @@ Before running the migration tool, ensure the following:
 
 2. **Kubernetes CLI (`kubectl`)**
    - Installed and configured to interact with your Harvester cluster.
-   - Context must point to the target Harvester cluster.
+  - Each Harvester profile stored in Vault must include a kubeconfig and may include an optional kubectl context.
 
-3. **vSphere Access**
+3. **HashiCorp Vault**
+  - Reachable from the migration host.
+  - AppRole authentication configured for this tool.
+  - Vault policy must allow reading and writing the configured `vsphere-2-harvester` secret paths.
+
+4. **vSphere Access**
    - Valid vSphere credentials with permissions to read VM definitions.
    - Ensure VM names are **RFC1123 compliant** (lowercase, no special characters, max 63 chars).
 
@@ -83,23 +92,60 @@ Run the migration tool:
 ./vsphere-2-harvester.sh
 ```
 
+### Vault Bootstrap
+
+The script no longer uses `~/.vsphere2harvester.conf` or `~/.vsphere2harvester.state`.
+
+Instead, it uses a single ignored bootstrap file in the repository root:
+
+```text
+.vault-bootstrap
+```
+
+This file is created by the **Configure Vault Connection** wizard and contains only:
+
+- `VAULT_ADDR`
+- `VAULT_NAMESPACE` (optional)
+- `VAULT_KV_MOUNT`
+- `VAULT_KV_PREFIX`
+- `VAULT_AUTH_PATH`
+- `VAULT_ROLE_ID`
+- `VAULT_SECRET_ID`
+- TLS verification settings
+
+All vCenter profiles, Harvester profiles, kubeconfigs, and migration mappings are stored in Vault.
+
 ### Interactive Configuration
 
-The script will prompt for required values. Defaults and current values are displayed, and sensitive inputs (e.g., API keys, passwords) are masked.
+At startup, the script presents a wizard-style main menu with actions such as:
+
+- Configure Vault connection
+- Test Vault connection
+- Add vCenter profile
+- Add Harvester profile
+- Add migration profile
+- List stored profiles
+- Remove stored profile
+- Run migration
+
+When you choose **Run migration**, the script loads available migration profiles from Vault, lets you select one, and then prompts for runtime values such as VM name, folder, and any route-specific overrides.
 
 Prompts include:
-- **Harvester API URL** (e.g., `https://harvester.example.com`)
-- **Harvester API Access Key / Secret Key**
-- **Harvester Namespace** (default: `har-fasp-02`)
-- **vSphere Username / Password**
-- **vSphere Endpoint** (e.g., `https://vcenter.example.com/sdk`)
+- **Migration Profile**
 - **vSphere Datacenter**
 - **Source Network** (vSphere)
 - **Destination Network** (Harvester)
+- **Harvester Namespace**
 - **VM Name**
 - **VM Folder** (optional)
+- **CPU Socket Count**
 
-All values are saved to `~/.vsphere2harvester.conf` for reuse.
+Harvester profiles are added through the wizard and include:
+
+- Harvester URL
+- API access key and secret key
+- Kubeconfig file content stored in Vault
+- Optional kubectl context
 
 ---
 
@@ -139,6 +185,9 @@ Enter=Continue, q=Quit
   - Compressed archives
   - Max age: 30 days
 
+- **Vault Bootstrap**
+  `.vault-bootstrap` is the only local persistent file used by the script, and it should remain mode `600`.
+
 ---
 
 ## Error Handling & Recovery
@@ -160,8 +209,14 @@ Enter=Continue, q=Quit
    Ensure VM names are RFC1123 compliant.
 
 2. **Network Mapping**  
-   Validate that source and destination networks exist and are correctly mapped.
+  Validate that source and destination networks exist and are correctly mapped in the selected migration profile stored in Vault.
 
-3. **Windows VMs**  
+3. **Multiple Targets**
+  Each migration profile creates a unique Kubernetes Secret and `VmwareSource` name derived from the selected profile so multiple vCenters and Harvester clusters do not collide.
+
+4. **Vault Bootstrap Security**
+  The AppRole `secret_id` in `.vault-bootstrap` is sensitive. Keep the file permissioned to `600` and do not commit or copy it casually.
+
+5. **Windows VMs**
    - Set disk controller to **SATA** in vCenter before migration.  
    - Install **VirtIO drivers** post‑import for optimal performance.

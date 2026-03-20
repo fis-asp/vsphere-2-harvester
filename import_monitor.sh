@@ -1,3 +1,6 @@
+#!/bin/bash
+# shellcheck shell=bash
+
 import_monitor_status() {
   set +e  # Disable 'exit on error' for this function
   local vm_name="$1"
@@ -23,8 +26,8 @@ import_monitor_status() {
   while (( retry == 1)); do
     while (( waited < max_wait )); do
       pod_name=""
-      for try in {1..5}; do
-        pod_name=$(kubectl get pods -n harvester-system -o name 2>/dev/null | grep harvester-vm-import-controller | cut -d'/' -f2 || true)
+      for _ in {1..5}; do
+        pod_name=$(run_kubectl get pods -n harvester-system -o name 2>/dev/null | grep harvester-vm-import-controller | cut -d'/' -f2 || true)
         [[ -n "$pod_name" ]] && break
         sleep 2
       done
@@ -37,8 +40,8 @@ import_monitor_status() {
       fi
 
       local logs_ok=0
-      for log_try in {1..3}; do
-        mapfile -t lines < <(kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null) && logs_ok=1 && break
+      for _ in {1..3}; do
+        mapfile -t lines < <(run_kubectl logs -n harvester-system "$pod_name" --since-time="$since_time" 2>/dev/null) && logs_ok=1 && break
         sleep 2
       done
       if [[ $logs_ok -eq 0 ]]; then
@@ -66,7 +69,7 @@ import_monitor_status() {
         last_line_hash="$(echo "${lines[-1]}" | sha256sum)"
       fi
 
-      import_status=$(kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
+      import_status=$(run_kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o jsonpath='{.status.importStatus}' 2>/dev/null || echo "notfound")
       if [[ "$import_status" == "virtualMachineRunning" ]]; then
         log "$SCRIPT_NAME" "INFO" "Import successful! VM is running."
         echo
@@ -103,7 +106,7 @@ import_monitor_status() {
   if [[ "$import_status" != "virtualMachineRunning" ]]; then
     log "$SCRIPT_NAME" "ERROR" "Import did not complete successfully. Check the Harvester UI and logs."
     log "$SCRIPT_NAME" "INFO" "Full resource details:"
-    kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$LOG_DIR/${vm_name}.log"
+    run_kubectl get virtualmachineimport.migration "$vm_name" -n "$namespace" -o yaml | tee -a "$LOG_DIR/${vm_name}.log"
     echo -e "\n❌ ERROR: Import did not complete successfully. Please check the Harvester UI and logs."
     set -e
     return 1
