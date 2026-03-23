@@ -217,6 +217,23 @@ vault_error_summary() {
   fi
 }
 
+vault_response_shape() {
+  local body="${1:-}"
+  local shape
+
+  if [[ -z "$body" ]]; then
+    echo "empty-body"
+    return 0
+  fi
+
+  shape=$(echo "$body" | jq -c '{top_level_keys:(keys), has_auth:(has("auth")), auth_keys:(.auth|keys? // []), has_data:(has("data")), has_errors:(has("errors")), warnings:(.warnings // null)}' 2>/dev/null || true)
+  if [[ -n "$shape" ]]; then
+    echo "$shape"
+  else
+    echo "non-json-body"
+  fi
+}
+
 load_bootstrap_config() {
   if ! vault_bootstrap_exists; then
     log "$SCRIPT_NAME" "WARNING" "Vault bootstrap file not found at $VAULT_BOOTSTRAP_FILE"
@@ -330,7 +347,7 @@ vault_health_check() {
 }
 
 vault_authenticate() {
-  local payload response token error_summary
+  local payload response token error_summary response_shape
 
   if [[ -n "${VAULT_TOKEN:-}" ]]; then
     log "$SCRIPT_NAME" "DEBUG" "Reusing existing Vault token in current process"
@@ -348,6 +365,8 @@ vault_authenticate() {
 
   token=$(echo "$response" | jq -r '.auth.client_token // empty')
   if [[ -z "$token" ]]; then
+    response_shape=$(vault_response_shape "$response")
+    log "$SCRIPT_NAME" "ERROR" "Vault auth response shape: ${response_shape}"
     log "$SCRIPT_NAME" "ERROR" "Vault authentication response did not contain a client token"
     show_error "Vault login did not return a client token"
     return 1
