@@ -776,7 +776,7 @@ log() {
   fi
 
   if [[ "$VERBOSE" -eq 1 ]]; then
-    echo "$formatted"
+    echo "$formatted" >&2
   fi
 }
 
