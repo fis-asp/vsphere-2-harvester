@@ -115,10 +115,68 @@ This file is created by the **Configure Vault Connection** wizard and contains o
 
 All vCenter profiles, Harvester profiles, kubeconfigs, and migration mappings are stored in Vault.
 
+### What You Must Create In Vault
+
+Before the connection wizard can succeed, Vault needs a small amount of one-time setup.
+
+1. Enable a KV v2 secrets engine.
+
+```bash
+vault secrets enable -path=secret kv-v2
+```
+
+2. Enable AppRole auth if it is not already enabled.
+
+```bash
+vault auth enable approle
+```
+
+3. Create a policy for this tool.
+
+```hcl
+path "secret/data/vsphere-2-harvester/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+path "secret/metadata/vsphere-2-harvester/*" {
+  capabilities = ["read", "list", "delete"]
+}
+```
+
+4. Write the policy and create an AppRole that uses it.
+
+```bash
+vault policy write vsphere-2-harvester vsphere-2-harvester-policy.hcl
+vault write auth/approle/role/vsphere-2-harvester token_policies="vsphere-2-harvester"
+```
+
+5. Read the `role_id` and generate a `secret_id` for the wizard.
+
+```bash
+vault read auth/approle/role/vsphere-2-harvester/role-id
+vault write -f auth/approle/role/vsphere-2-harvester/secret-id
+```
+
+The script expects to manage data under these Vault paths:
+
+- `secret/data/vsphere-2-harvester/vcenters/<name>`
+- `secret/data/vsphere-2-harvester/harvesters/<name>`
+- `secret/data/vsphere-2-harvester/migrations/<name>`
+
+Expected fields:
+
+- `vcenters/<name>`
+  `username`, `password`, `endpoint`, `datacenter`
+- `harvesters/<name>`
+  `url`, `access_key`, `secret_key`, `kubeconfig_b64`, `context`
+- `migrations/<name>`
+  `vcenter_profile`, `harvester_profile`, `datacenter`, `src_network`, `dst_network`, `namespace`, `cpu_sockets`
+
 ### Interactive Configuration
 
 At startup, the script presents a wizard-style main menu with actions such as:
 
+- Show Vault setup guide
 - Configure Vault connection
 - Test Vault connection
 - Add vCenter profile

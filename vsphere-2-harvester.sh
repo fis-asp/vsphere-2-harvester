@@ -780,11 +780,79 @@ prompt_for_var() {
   done
 }
 
+show_vault_setup_guide() {
+  show_step_header "Vault" "Vault Setup Guide"
+
+  cat <<EOF
+Before this script can use Vault, prepare Vault with these steps:
+
+1. Enable a KV v2 secrets engine.
+   Example:
+     vault secrets enable -path=${VAULT_KV_MOUNT:-secret} kv-v2
+
+2. Enable AppRole auth if it is not already enabled.
+   Example:
+     vault auth enable approle
+
+3. Create a policy that allows this tool to manage its paths.
+   Recommended paths:
+     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/vcenters/*
+     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/harvesters/*
+     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/migrations/*
+     ${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*
+
+   Example policy:
+     path "${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+       capabilities = ["create", "read", "update", "delete", "list"]
+     }
+     path "${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+       capabilities = ["read", "list", "delete"]
+     }
+
+4. Create an AppRole bound to that policy.
+   Example:
+     vault policy write vsphere-2-harvester - <<'EOF_POLICY'
+     path "${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+       capabilities = ["create", "read", "update", "delete", "list"]
+     }
+     path "${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+       capabilities = ["read", "list", "delete"]
+     }
+     EOF_POLICY
+     vault write auth/approle/role/vsphere-2-harvester token_policies="vsphere-2-harvester"
+
+5. Read the AppRole identifiers for the bootstrap wizard.
+   Example:
+     vault read auth/approle/role/vsphere-2-harvester/role-id
+     vault write -f auth/approle/role/vsphere-2-harvester/secret-id
+
+6. After the connection wizard succeeds, use this script to populate Vault data.
+   The wizard stores entries at:
+     vcenters/<name>
+     harvesters/<name>
+     migrations/<name>
+
+Profile field expectations:
+  vcenters/<name>
+    username, password, endpoint, datacenter
+
+  harvesters/<name>
+    url, access_key, secret_key, kubeconfig_b64, context
+
+  migrations/<name>
+    vcenter_profile, harvester_profile, datacenter, src_network,
+    dst_network, namespace, cpu_sockets
+EOF
+
+  echo
+  gum style --foreground 244 "The bootstrap wizard only stores Vault connection data locally in ${VAULT_BOOTSTRAP_FILE}."
+}
+
 ensure_vault_session() {
   check_vault_dependencies
 
   if ! load_bootstrap_config; then
-    show_error "Vault bootstrap is not configured. Run 'Configure Vault Connection' first."
+    show_error "Vault bootstrap is not configured. Run 'Show Vault Setup Guide' and then 'Configure Vault Connection'."
     return 1
   fi
 
@@ -798,6 +866,12 @@ ensure_vault_session() {
 
 configure_vault_connection_wizard() {
   show_step_header "Vault" "Configure Vault Connection"
+
+  show_vault_setup_guide
+  echo
+  if ! confirm_action "Continue with Vault bootstrap setup?"; then
+    return 1
+  fi
 
   prompt_for_var "VAULT_ADDR" "Vault URL" "${VAULT_ADDR:-https://vault.example.com}"
   prompt_for_var "VAULT_NAMESPACE" "Vault Namespace (optional)" "${VAULT_NAMESPACE:-}"
@@ -1022,6 +1096,7 @@ wizard_remove_profile() {
 show_main_menu() {
   gum choose \
     --header "$(gum style --foreground 212 --bold 'Select Action')" \
+    "Show Vault Setup Guide" \
     "Configure Vault Connection" \
     "Test Vault Connection" \
     "Add vCenter Profile" \
@@ -1591,6 +1666,9 @@ main() {
     fi
 
     case "$action" in
+      "Show Vault Setup Guide")
+        show_vault_setup_guide
+        ;;
       "Configure Vault Connection")
         configure_vault_connection_wizard
         ;;
