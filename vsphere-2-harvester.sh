@@ -213,8 +213,25 @@ vault_error_summary() {
   if [[ -n "$summary" ]]; then
     echo "$summary"
   else
-    echo "Unexpected Vault response"
+    echo "Unexpected Vault response: $(vault_response_preview "$body")"
   fi
+}
+
+vault_response_preview() {
+  local body="${1:-}"
+  local preview
+
+  if [[ -z "$body" ]]; then
+    echo "empty-body"
+    return 0
+  fi
+
+  preview=$(printf '%s' "$body" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//')
+  if [[ ${#preview} -gt 160 ]]; then
+    preview="${preview:0:160}..."
+  fi
+
+  echo "$preview"
 }
 
 vault_response_shape() {
@@ -232,6 +249,16 @@ vault_response_shape() {
   else
     echo "non-json-body"
   fi
+}
+
+vault_response_is_json() {
+  local body="${1:-}"
+
+  if [[ -z "$body" ]]; then
+    return 0
+  fi
+
+  echo "$body" | jq -e . >/dev/null 2>&1
 }
 
 load_bootstrap_config() {
@@ -280,7 +307,7 @@ vault_api_request() {
   local method="$1"
   local path="$2"
   local payload="${3:-}"
-  local response http_code body error_summary
+  local response_meta http_code content_type body error_summary response_preview temp_body temp_headers
   local -a curl_args
 
   log "$SCRIPT_NAME" "DEBUG" "Vault request: method=${method} path=${path}"
@@ -298,23 +325,38 @@ vault_api_request() {
   if [[ -n "${VAULT_TOKEN:-}" ]]; then
     curl_args+=(-H "X-Vault-Token: ${VAULT_TOKEN}")
   fi
+  curl_args+=(-H 'Accept: application/json')
   if [[ -n "$payload" ]]; then
     curl_args+=(-H 'Content-Type: application/json' --data "$payload")
   fi
 
-  if ! response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/${path}" -w "\n%{http_code}"); then
+  temp_body=$(mktemp "${TMPDIR:-/tmp}/v2h-vault-body-XXXXXX")
+  temp_headers=$(mktemp "${TMPDIR:-/tmp}/v2h-vault-headers-XXXXXX")
+
+  if ! response_meta=$("${curl_args[@]}" -D "$temp_headers" -o "$temp_body" "${VAULT_ADDR%/}/v1/${path}" -w "%{http_code}|%{content_type}"); then
+    rm -f "$temp_body" "$temp_headers"
     log "$SCRIPT_NAME" "ERROR" "Vault request failed before receiving an HTTP response: method=${method} path=${path}"
     return 1
   fi
 
-  http_code=$(echo "$response" | tail -n1)
-  body=$(echo "$response" | sed '$d')
+  http_code="${response_meta%%|*}"
+  content_type="${response_meta#*|}"
+  body=$(cat "$temp_body")
+  rm -f "$temp_body" "$temp_headers"
   VAULT_LAST_STATUS="$http_code"
-  log "$SCRIPT_NAME" "DEBUG" "Vault response: method=${method} path=${path} status=${http_code}"
+  log "$SCRIPT_NAME" "DEBUG" "Vault response: method=${method} path=${path} status=${http_code} content_type=${content_type:-unknown}"
 
   if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
     error_summary=$(vault_error_summary "$body")
     log "$SCRIPT_NAME" "ERROR" "Vault request failed: method=${method} path=${path} status=${http_code} error=${error_summary}"
+    echo "$body"
+    return 1
+  fi
+
+  if ! vault_response_is_json "$body"; then
+    response_preview=$(vault_response_preview "$body")
+    log "$SCRIPT_NAME" "ERROR" "Vault returned a non-JSON response: method=${method} path=${path} status=${http_code} content_type=${content_type:-unknown} preview=${response_preview}"
+    log "$SCRIPT_NAME" "ERROR" "Verify VAULT_ADDR points to the Vault API base URL or reverse-proxy prefix so ${VAULT_ADDR%/}/v1/${path} returns JSON"
     echo "$body"
     return 1
   fi
@@ -324,7 +366,7 @@ vault_api_request() {
 
 vault_health_check() {
   local -a curl_args
-  local response http_code
+  local response_meta http_code content_type body response_preview temp_body temp_headers
 
   curl_args=(curl -sS)
   if [[ "$VAULT_SKIP_VERIFY" == "true" ]]; then
@@ -333,17 +375,37 @@ vault_health_check() {
   if [[ -n "${VAULT_CACERT:-}" ]]; then
     curl_args+=(--cacert "$VAULT_CACERT")
   fi
+  curl_args+=(-H 'Accept: application/json')
 
   log "$SCRIPT_NAME" "INFO" "Checking Vault health at ${VAULT_ADDR}"
 
-  if ! response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/sys/health" -w "\n%{http_code}"); then
+  temp_body=$(mktemp "${TMPDIR:-/tmp}/v2h-vault-health-body-XXXXXX")
+  temp_headers=$(mktemp "${TMPDIR:-/tmp}/v2h-vault-health-headers-XXXXXX")
+
+  if ! response_meta=$("${curl_args[@]}" -D "$temp_headers" -o "$temp_body" "${VAULT_ADDR%/}/v1/sys/health" -w "%{http_code}|%{content_type}"); then
+    rm -f "$temp_body" "$temp_headers"
     log "$SCRIPT_NAME" "ERROR" "Vault health check request failed for ${VAULT_ADDR}"
     return 1
   fi
 
-  http_code=$(echo "$response" | tail -n1)
-  log "$SCRIPT_NAME" "DEBUG" "Vault health check status=${http_code}"
-  [[ "$http_code" =~ ^(200|429|472|473)$ ]]
+  http_code="${response_meta%%|*}"
+  content_type="${response_meta#*|}"
+  body=$(cat "$temp_body")
+  rm -f "$temp_body" "$temp_headers"
+  log "$SCRIPT_NAME" "DEBUG" "Vault health check status=${http_code} content_type=${content_type:-unknown}"
+
+  if [[ ! "$http_code" =~ ^(200|429|472|473)$ ]]; then
+    return 1
+  fi
+
+  if ! vault_response_is_json "$body"; then
+    response_preview=$(vault_response_preview "$body")
+    log "$SCRIPT_NAME" "ERROR" "Vault health endpoint returned a non-JSON response: status=${http_code} content_type=${content_type:-unknown} preview=${response_preview}"
+    log "$SCRIPT_NAME" "ERROR" "Set VAULT_ADDR to the Vault API base URL or proxy prefix so ${VAULT_ADDR%/}/v1/sys/health returns JSON"
+    return 1
+  fi
+
+  return 0
 }
 
 vault_authenticate() {
@@ -359,6 +421,7 @@ vault_authenticate() {
   if ! response=$(vault_api_request POST "$VAULT_AUTH_PATH" "$payload"); then
     error_summary=$(vault_error_summary "$response")
     log "$SCRIPT_NAME" "ERROR" "Vault authentication failed at path ${VAULT_AUTH_PATH}: ${error_summary}"
+    log "$SCRIPT_NAME" "ERROR" "If /v1/sys/health returns JSON but AppRole login does not, verify the auth mount path and whether a proxy/WAF is intercepting POST ${VAULT_ADDR%/}/v1/${VAULT_AUTH_PATH}"
     show_error "Vault authentication failed"
     return 1
   fi
@@ -953,6 +1016,12 @@ Before this script can use Vault, prepare Vault with these steps:
      harvesters/<name>
      migrations/<name>
 
+Vault URL rule:
+  Enter the Vault base URL or reverse-proxy prefix that makes this endpoint return JSON:
+    ${VAULT_ADDR:-https://vault.example.com}/v1/sys/health
+  Do not paste a web UI path such as /ui/ or /ui/vault.
+  If Vault is published behind a proxy path such as /vault, use that prefix in the URL.
+
 Profile field expectations:
   vcenters/<name>
     username, password, endpoint, datacenter
@@ -996,7 +1065,7 @@ configure_vault_connection_wizard() {
     return 1
   fi
 
-  prompt_for_var "VAULT_ADDR" "Vault URL" "${VAULT_ADDR:-https://vault.example.com}"
+  prompt_for_var "VAULT_ADDR" "Vault base URL or proxy prefix" "${VAULT_ADDR:-https://vault.example.com}"
   prompt_for_var "VAULT_NAMESPACE" "Vault Namespace (optional)" "${VAULT_NAMESPACE:-}"
   prompt_for_var "VAULT_KV_MOUNT" "Vault KV mount" "${VAULT_KV_MOUNT:-vsphere-2-harvester}"
   prompt_for_var "VAULT_KV_PREFIX" "Vault KV prefix" "${VAULT_KV_PREFIX:-profiles}"

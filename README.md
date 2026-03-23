@@ -115,6 +115,17 @@ This file is created by the **Configure Vault Connection** wizard and contains o
 
 All vCenter profiles, Harvester profiles, kubeconfigs, and migration mappings are stored in Vault.
 
+The `VAULT_ADDR` value must be the Vault API base URL or the reverse-proxy prefix in front of Vault. The script calls `${VAULT_ADDR}/v1/...`, so this check must return JSON, not HTML:
+
+```text
+<VAULT_ADDR>/v1/sys/health
+```
+
+Examples:
+
+- If the Vault UI is at `https://vault.example.com/ui/`, use `https://vault.example.com`
+- If Vault is published behind a proxy at `https://gateway.example.com/vault/`, use `https://gateway.example.com/vault`
+
 ### What You Must Create In Vault
 
 Before the connection wizard can succeed, Vault needs a small amount of one-time setup.
