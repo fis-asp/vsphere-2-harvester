@@ -119,38 +119,69 @@ All vCenter profiles, Harvester profiles, kubeconfigs, and migration mappings ar
 
 Before the connection wizard can succeed, Vault needs a small amount of one-time setup.
 
-1. Enable a KV v2 secrets engine.
+1. In the Vault web console, make sure a **KV v2** secrets engine exists.
 
-```bash
-vault secrets enable -path=secret kv-v2
-```
+Navigate to **Secrets Engines** and either:
 
-2. Enable AppRole auth if it is not already enabled.
+- verify an existing KV v2 mount named `vsphere-2-harvester`, or
+- enable a new KV v2 engine with mount path `vsphere-2-harvester`
 
-```bash
-vault auth enable approle
-```
+The default implementation now assumes a dedicated mount instead of the generic `secret` mount.
 
-3. Create a policy for this tool.
+2. In the Vault web console, make sure **AppRole** auth is enabled.
+
+Navigate to **Access -> Auth Methods** and either:
+
+- verify an existing AppRole auth method, or
+- enable AppRole
+
+3. In the Vault web console, create a policy for this tool.
+
+Navigate to **Policies** and create a policy such as `vsphere-2-harvester` with access like this:
 
 ```hcl
-path "secret/data/vsphere-2-harvester/*" {
+path "vsphere-2-harvester/data/profiles/*" {
   capabilities = ["create", "read", "update", "delete", "list"]
 }
 
-path "secret/metadata/vsphere-2-harvester/*" {
+path "vsphere-2-harvester/metadata/profiles/*" {
   capabilities = ["read", "list", "delete"]
 }
 ```
 
-4. Write the policy and create an AppRole that uses it.
+You can do the same thing from the Vault web CLI:
 
 ```bash
-vault policy write vsphere-2-harvester vsphere-2-harvester-policy.hcl
+vault policy write vsphere-2-harvester - <<'EOF_POLICY'
+path "vsphere-2-harvester/data/profiles/*" {
+  capabilities = ["create", "read", "update", "delete", "list"]
+}
+
+path "vsphere-2-harvester/metadata/profiles/*" {
+  capabilities = ["read", "list", "delete"]
+}
+EOF_POLICY
+```
+
+4. In the Vault web console, create an AppRole that uses that policy.
+
+Navigate to **Access -> Auth Methods -> AppRole** and create a role such as:
+
+- `vsphere-2-harvester`
+
+Attach the `vsphere-2-harvester` policy to that role.
+
+This can also be done from the Vault web CLI:
+
+```bash
 vault write auth/approle/role/vsphere-2-harvester token_policies="vsphere-2-harvester"
 ```
 
-5. Read the `role_id` and generate a `secret_id` for the wizard.
+5. In the Vault web console, read the `role_id` and generate a `secret_id` for the wizard.
+
+You will use these two values in the script's **Configure Vault Connection** flow.
+
+Vault web CLI equivalent:
 
 ```bash
 vault read auth/approle/role/vsphere-2-harvester/role-id
@@ -159,9 +190,9 @@ vault write -f auth/approle/role/vsphere-2-harvester/secret-id
 
 The script expects to manage data under these Vault paths:
 
-- `secret/data/vsphere-2-harvester/vcenters/<name>`
-- `secret/data/vsphere-2-harvester/harvesters/<name>`
-- `secret/data/vsphere-2-harvester/migrations/<name>`
+- `vsphere-2-harvester/data/profiles/vcenters/<name>`
+- `vsphere-2-harvester/data/profiles/harvesters/<name>`
+- `vsphere-2-harvester/data/profiles/migrations/<name>`
 
 Expected fields:
 
@@ -171,6 +202,8 @@ Expected fields:
   `url`, `access_key`, `secret_key`, `kubeconfig_b64`, `context`
 - `migrations/<name>`
   `vcenter_profile`, `harvester_profile`, `datacenter`, `src_network`, `dst_network`, `namespace`, `cpu_sockets`
+
+If your Vault team prefers Terraform or the `vault` CLI, they can create the same mount, policy, and AppRole outside the web console. From the script's perspective, only the resulting Vault URL, mount, prefix, `role_id`, and `secret_id` matter.
 
 ### Interactive Configuration
 

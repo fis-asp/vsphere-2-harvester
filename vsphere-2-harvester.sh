@@ -26,8 +26,8 @@ VAULT_TOKEN=""
 VAULT_LAST_STATUS=""
 VAULT_ADDR=""
 VAULT_NAMESPACE=""
-VAULT_KV_MOUNT="secret"
-VAULT_KV_PREFIX="vsphere-2-harvester"
+VAULT_KV_MOUNT="vsphere-2-harvester"
+VAULT_KV_PREFIX="profiles"
 VAULT_AUTH_PATH="auth/approle/login"
 VAULT_ROLE_ID=""
 VAULT_SECRET_ID=""
@@ -200,23 +200,45 @@ vault_bootstrap_exists() {
   [[ -f "$VAULT_BOOTSTRAP_FILE" ]]
 }
 
+vault_error_summary() {
+  local body="${1:-}"
+  local summary
+
+  if [[ -z "$body" ]]; then
+    echo "No response body returned"
+    return 0
+  fi
+
+  summary=$(echo "$body" | jq -r 'if .errors then (.errors | join("; ")) else empty end' 2>/dev/null || true)
+  if [[ -n "$summary" ]]; then
+    echo "$summary"
+  else
+    echo "Unexpected Vault response"
+  fi
+}
+
 load_bootstrap_config() {
   if ! vault_bootstrap_exists; then
+    log "$SCRIPT_NAME" "WARNING" "Vault bootstrap file not found at $VAULT_BOOTSTRAP_FILE"
     return 1
   fi
 
   # shellcheck source=/dev/null
   source "$VAULT_BOOTSTRAP_FILE"
 
-  VAULT_KV_MOUNT="${VAULT_KV_MOUNT:-secret}"
-  VAULT_KV_PREFIX="${VAULT_KV_PREFIX:-vsphere-2-harvester}"
+  VAULT_KV_MOUNT="${VAULT_KV_MOUNT:-vsphere-2-harvester}"
+  VAULT_KV_PREFIX="${VAULT_KV_PREFIX:-profiles}"
   VAULT_AUTH_PATH="${VAULT_AUTH_PATH:-auth/approle/login}"
   VAULT_SKIP_VERIFY="${VAULT_SKIP_VERIFY:-false}"
 
   if [[ -z "${VAULT_ADDR:-}" || -z "${VAULT_ROLE_ID:-}" || -z "${VAULT_SECRET_ID:-}" ]]; then
+    log "$SCRIPT_NAME" "ERROR" "Vault bootstrap file is present but missing required settings"
     show_error "Vault bootstrap file is missing required settings"
     return 1
   fi
+
+  log "$SCRIPT_NAME" "INFO" "Loaded Vault bootstrap from $VAULT_BOOTSTRAP_FILE"
+  log "$SCRIPT_NAME" "DEBUG" "Vault bootstrap settings: addr=${VAULT_ADDR}, mount=${VAULT_KV_MOUNT}, prefix=${VAULT_KV_PREFIX}, namespace=${VAULT_NAMESPACE:-none}, skip_verify=${VAULT_SKIP_VERIFY}"
 
   return 0
 }
@@ -234,14 +256,17 @@ VAULT_SKIP_VERIFY="${VAULT_SKIP_VERIFY}"
 VAULT_CACERT="${VAULT_CACERT:-}"
 EOF
   chmod 600 "$VAULT_BOOTSTRAP_FILE"
+  log "$SCRIPT_NAME" "INFO" "Saved Vault bootstrap to $VAULT_BOOTSTRAP_FILE"
 }
 
 vault_api_request() {
   local method="$1"
   local path="$2"
   local payload="${3:-}"
-  local response http_code body
+  local response http_code body error_summary
   local -a curl_args
+
+  log "$SCRIPT_NAME" "DEBUG" "Vault request: method=${method} path=${path}"
 
   curl_args=(curl -sS -X "$method")
   if [[ "$VAULT_SKIP_VERIFY" == "true" ]]; then
@@ -260,12 +285,19 @@ vault_api_request() {
     curl_args+=(-H 'Content-Type: application/json' --data "$payload")
   fi
 
-  response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/${path}" -w "\n%{http_code}") || return 1
+  if ! response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/${path}" -w "\n%{http_code}"); then
+    log "$SCRIPT_NAME" "ERROR" "Vault request failed before receiving an HTTP response: method=${method} path=${path}"
+    return 1
+  fi
+
   http_code=$(echo "$response" | tail -n1)
   body=$(echo "$response" | sed '$d')
   VAULT_LAST_STATUS="$http_code"
+  log "$SCRIPT_NAME" "DEBUG" "Vault response: method=${method} path=${path} status=${http_code}"
 
   if [[ "$http_code" -lt 200 || "$http_code" -ge 300 ]]; then
+    error_summary=$(vault_error_summary "$body")
+    log "$SCRIPT_NAME" "ERROR" "Vault request failed: method=${method} path=${path} status=${http_code} error=${error_summary}"
     echo "$body"
     return 1
   fi
@@ -285,32 +317,45 @@ vault_health_check() {
     curl_args+=(--cacert "$VAULT_CACERT")
   fi
 
-  response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/sys/health" -w "\n%{http_code}") || return 1
+  log "$SCRIPT_NAME" "INFO" "Checking Vault health at ${VAULT_ADDR}"
+
+  if ! response=$("${curl_args[@]}" "${VAULT_ADDR%/}/v1/sys/health" -w "\n%{http_code}"); then
+    log "$SCRIPT_NAME" "ERROR" "Vault health check request failed for ${VAULT_ADDR}"
+    return 1
+  fi
+
   http_code=$(echo "$response" | tail -n1)
+  log "$SCRIPT_NAME" "DEBUG" "Vault health check status=${http_code}"
   [[ "$http_code" =~ ^(200|429|472|473)$ ]]
 }
 
 vault_authenticate() {
-  local payload response token
+  local payload response token error_summary
 
   if [[ -n "${VAULT_TOKEN:-}" ]]; then
+    log "$SCRIPT_NAME" "DEBUG" "Reusing existing Vault token in current process"
     return 0
   fi
 
+  log "$SCRIPT_NAME" "INFO" "Authenticating to Vault using AppRole"
   payload=$(jq -cn --arg role_id "$VAULT_ROLE_ID" --arg secret_id "$VAULT_SECRET_ID" '{role_id:$role_id, secret_id:$secret_id}')
   if ! response=$(vault_api_request POST "$VAULT_AUTH_PATH" "$payload"); then
+    error_summary=$(vault_error_summary "$response")
+    log "$SCRIPT_NAME" "ERROR" "Vault authentication failed at path ${VAULT_AUTH_PATH}: ${error_summary}"
     show_error "Vault authentication failed"
     return 1
   fi
 
   token=$(echo "$response" | jq -r '.auth.client_token // empty')
   if [[ -z "$token" ]]; then
+    log "$SCRIPT_NAME" "ERROR" "Vault authentication response did not contain a client token"
     show_error "Vault login did not return a client token"
     return 1
   fi
 
   VAULT_TOKEN="$token"
   export VAULT_TOKEN
+  log "$SCRIPT_NAME" "INFO" "Vault authentication succeeded"
   return 0
 }
 
@@ -324,9 +369,14 @@ vault_metadata_path() {
 
 vault_kv_get_json() {
   local secret_path="$1"
-  local response
+  local response error_summary
 
-  response=$(vault_api_request GET "$(vault_data_path "$secret_path")") || return 1
+  if ! response=$(vault_api_request GET "$(vault_data_path "$secret_path")"); then
+    error_summary=$(vault_error_summary "$response")
+    log "$SCRIPT_NAME" "ERROR" "Failed to read Vault secret at ${secret_path}: ${error_summary}"
+    return 1
+  fi
+
   echo "$response" | jq -c '.data.data'
 }
 
@@ -342,28 +392,47 @@ vault_kv_get_field() {
 vault_kv_put_json() {
   local secret_path="$1"
   local object_json="$2"
-  local payload
+  local payload response error_summary
 
   payload=$(jq -cn --argjson data "$object_json" '{data:$data}')
-  vault_api_request POST "$(vault_data_path "$secret_path")" "$payload" >/dev/null
+  if ! response=$(vault_api_request POST "$(vault_data_path "$secret_path")" "$payload"); then
+    error_summary=$(vault_error_summary "$response")
+    log "$SCRIPT_NAME" "ERROR" "Failed to write Vault secret at ${secret_path}: ${error_summary}"
+    return 1
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Stored Vault secret at ${secret_path}"
 }
 
 vault_kv_delete() {
   local secret_path="$1"
-  vault_api_request DELETE "$(vault_data_path "$secret_path")" >/dev/null
+  local response error_summary
+
+  if ! response=$(vault_api_request DELETE "$(vault_data_path "$secret_path")"); then
+    error_summary=$(vault_error_summary "$response")
+    log "$SCRIPT_NAME" "ERROR" "Failed to delete Vault secret at ${secret_path}: ${error_summary}"
+    return 1
+  fi
+
+  log "$SCRIPT_NAME" "INFO" "Deleted Vault secret at ${secret_path}"
 }
 
 vault_kv_list() {
   local prefix="$1"
-  local response
+  local response error_summary
 
   if ! response=$(vault_api_request GET "$(vault_metadata_path "$prefix")?list=true"); then
     if [[ "${VAULT_LAST_STATUS:-}" == "404" ]]; then
+      log "$SCRIPT_NAME" "WARNING" "Vault list path not found: ${prefix}"
       return 0
     fi
+
+    error_summary=$(vault_error_summary "$response")
+    log "$SCRIPT_NAME" "ERROR" "Failed to list Vault path ${prefix}: ${error_summary}"
     return 1
   fi
 
+  log "$SCRIPT_NAME" "DEBUG" "Listed Vault path ${prefix}"
   echo "$response" | jq -r '.data.keys[]?'
 }
 
@@ -383,12 +452,17 @@ load_vault_catalog() {
   local profile_json profile_name
 
   reset_profile_config
+  log "$SCRIPT_NAME" "INFO" "Loading Vault profile catalog"
+
   mapfile -t VCENTER_PROFILES < <(vault_kv_list "vcenters")
   mapfile -t HARVESTER_PROFILES < <(vault_kv_list "harvesters")
   mapfile -t MIGRATION_PROFILES < <(vault_kv_list "migrations")
 
+  log "$SCRIPT_NAME" "DEBUG" "Vault catalog counts: vcenters=${#VCENTER_PROFILES[@]} harvesters=${#HARVESTER_PROFILES[@]} migrations=${#MIGRATION_PROFILES[@]}"
+
   for profile_name in "${MIGRATION_PROFILES[@]}"; do
     profile_json=$(vault_kv_get_json "migrations/${profile_name}") || {
+      log "$SCRIPT_NAME" "ERROR" "Failed while loading migration profile ${profile_name} from Vault catalog"
       show_error "Failed to load migration profile '$profile_name' from Vault"
       return 1
     }
@@ -432,12 +506,14 @@ validate_profile_config() {
 
 load_config() {
   check_vault_dependencies
+  log "$SCRIPT_NAME" "INFO" "Initializing Vault-backed configuration"
 
   if ! load_bootstrap_config; then
     return 1
   fi
 
   if ! vault_health_check; then
+    log "$SCRIPT_NAME" "ERROR" "Vault health check failed for ${VAULT_ADDR}"
     show_error "Vault health check failed for ${VAULT_ADDR}"
     return 1
   fi
@@ -445,6 +521,7 @@ load_config() {
   vault_authenticate || return 1
   load_vault_catalog || return 1
   validate_profile_config || return 1
+  log "$SCRIPT_NAME" "INFO" "Vault-backed configuration loaded successfully"
 }
 
 resolve_runtime_context() {
@@ -457,6 +534,7 @@ resolve_runtime_context() {
   fi
 
   if [[ -z "${MIGRATION_VCENTERS[$migration_profile]:-}" ]]; then
+    log "$SCRIPT_NAME" "ERROR" "Requested migration profile ${migration_profile} is not defined in current Vault catalog"
     show_error "Migration profile '$migration_profile' is not defined"
     return 1
   fi
@@ -465,10 +543,12 @@ resolve_runtime_context() {
   harvester_profile="${MIGRATION_HARVESTERS[$migration_profile]}"
 
   vcenter_json=$(vault_kv_get_json "vcenters/${vcenter_profile}") || {
+    log "$SCRIPT_NAME" "ERROR" "Unable to resolve selected vCenter profile ${vcenter_profile}"
     show_error "Failed to load vCenter profile '$vcenter_profile'"
     return 1
   }
   harvester_json=$(vault_kv_get_json "harvesters/${harvester_profile}") || {
+    log "$SCRIPT_NAME" "ERROR" "Unable to resolve selected Harvester profile ${harvester_profile}"
     show_error "Failed to load Harvester profile '$harvester_profile'"
     return 1
   }
@@ -489,6 +569,8 @@ resolve_runtime_context() {
 
   VSPHERE_SECRET_NAME="$(resource_name "vsphere-credentials" "$migration_profile")"
   VMWARE_SOURCE_NAME="$(resource_name "vmwaresource" "$migration_profile")"
+
+  log "$SCRIPT_NAME" "INFO" "Resolved migration profile ${migration_profile}: vcenter=${vcenter_profile} harvester=${harvester_profile} namespace=${HARVESTER_NAMESPACE}"
 
   export VSPHERE_ENDPOINT VSPHERE_DC HARVESTER_URL HARVESTER_CONTEXT
   export SRC_NET DST_NET HARVESTER_NAMESPACE POST_MIGRATE_SOCKETS
@@ -786,43 +868,63 @@ show_vault_setup_guide() {
   cat <<EOF
 Before this script can use Vault, prepare Vault with these steps:
 
-1. Enable a KV v2 secrets engine.
-   Example:
-     vault secrets enable -path=${VAULT_KV_MOUNT:-secret} kv-v2
+1. In the Vault web console, make sure a KV v2 secrets engine exists.
+   Navigate to:
+     Secrets Engines
+   Then either:
+     - verify an existing KV v2 mount named '${VAULT_KV_MOUNT:-vsphere-2-harvester}', or
+     - enable a new KV v2 engine with that mount path.
 
-2. Enable AppRole auth if it is not already enabled.
-   Example:
-     vault auth enable approle
+2. In the Vault web console, make sure AppRole auth is enabled.
+   Navigate to:
+     Access -> Auth Methods
+   Then either:
+     - verify an existing AppRole auth method, or
+     - enable AppRole.
 
 3. Create a policy that allows this tool to manage its paths.
-   Recommended paths:
-     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/vcenters/*
-     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/harvesters/*
-     ${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/migrations/*
-     ${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*
+   In the web console navigate to:
+     Policies
+   Create or update a policy with access to these paths.
+   You can do this either in the policy editor or in the Vault web CLI.
+   Required paths:
+     ${VAULT_KV_MOUNT:-vsphere-2-harvester}/data/${VAULT_KV_PREFIX:-profiles}/vcenters/*
+     ${VAULT_KV_MOUNT:-vsphere-2-harvester}/data/${VAULT_KV_PREFIX:-profiles}/harvesters/*
+     ${VAULT_KV_MOUNT:-vsphere-2-harvester}/data/${VAULT_KV_PREFIX:-profiles}/migrations/*
+     ${VAULT_KV_MOUNT:-vsphere-2-harvester}/metadata/${VAULT_KV_PREFIX:-profiles}/*
 
-   Example policy:
-     path "${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+   Policy example:
+     path "${VAULT_KV_MOUNT:-vsphere-2-harvester}/data/${VAULT_KV_PREFIX:-profiles}/*" {
        capabilities = ["create", "read", "update", "delete", "list"]
      }
-     path "${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+     path "${VAULT_KV_MOUNT:-vsphere-2-harvester}/metadata/${VAULT_KV_PREFIX:-profiles}/*" {
        capabilities = ["read", "list", "delete"]
      }
 
-4. Create an AppRole bound to that policy.
-   Example:
+   Web CLI example:
      vault policy write vsphere-2-harvester - <<'EOF_POLICY'
-     path "${VAULT_KV_MOUNT:-secret}/data/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+     path "${VAULT_KV_MOUNT:-vsphere-2-harvester}/data/${VAULT_KV_PREFIX:-profiles}/*" {
        capabilities = ["create", "read", "update", "delete", "list"]
      }
-     path "${VAULT_KV_MOUNT:-secret}/metadata/${VAULT_KV_PREFIX:-vsphere-2-harvester}/*" {
+     path "${VAULT_KV_MOUNT:-vsphere-2-harvester}/metadata/${VAULT_KV_PREFIX:-profiles}/*" {
        capabilities = ["read", "list", "delete"]
      }
      EOF_POLICY
+
+4. Create an AppRole bound to that policy.
+   In the web console navigate to:
+     Access -> Auth Methods -> AppRole
+   Create a role such as:
+     vsphere-2-harvester
+   Attach the policy you created in the previous step.
+   This can also be done in the Vault web CLI:
      vault write auth/approle/role/vsphere-2-harvester token_policies="vsphere-2-harvester"
 
 5. Read the AppRole identifiers for the bootstrap wizard.
-   Example:
+   From the AppRole view in the web console, collect:
+     - role_id
+     - a generated secret_id
+   Or use the Vault web CLI:
      vault read auth/approle/role/vsphere-2-harvester/role-id
      vault write -f auth/approle/role/vsphere-2-harvester/secret-id
 
@@ -842,6 +944,8 @@ Profile field expectations:
   migrations/<name>
     vcenter_profile, harvester_profile, datacenter, src_network,
     dst_network, namespace, cpu_sockets
+
+If your Vault administrators prefer the CLI or Terraform, they can create the same mount, policy, and AppRole outside the web console. The script only needs the resulting URL, mount, prefix, role_id, and secret_id.
 EOF
 
   echo
@@ -875,8 +979,8 @@ configure_vault_connection_wizard() {
 
   prompt_for_var "VAULT_ADDR" "Vault URL" "${VAULT_ADDR:-https://vault.example.com}"
   prompt_for_var "VAULT_NAMESPACE" "Vault Namespace (optional)" "${VAULT_NAMESPACE:-}"
-  prompt_for_var "VAULT_KV_MOUNT" "Vault KV mount" "${VAULT_KV_MOUNT:-secret}"
-  prompt_for_var "VAULT_KV_PREFIX" "Vault KV prefix" "${VAULT_KV_PREFIX:-vsphere-2-harvester}"
+  prompt_for_var "VAULT_KV_MOUNT" "Vault KV mount" "${VAULT_KV_MOUNT:-vsphere-2-harvester}"
+  prompt_for_var "VAULT_KV_PREFIX" "Vault KV prefix" "${VAULT_KV_PREFIX:-profiles}"
   prompt_for_var "VAULT_AUTH_PATH" "Vault AppRole login path" "${VAULT_AUTH_PATH:-auth/approle/login}"
   prompt_for_var "VAULT_ROLE_ID" "Vault AppRole role_id" "${VAULT_ROLE_ID:-}"
   prompt_for_var "VAULT_SECRET_ID" "Vault AppRole secret_id" "${VAULT_SECRET_ID:-}" 1
