@@ -1,0 +1,20 @@
+# Internal CI/CD (keep local copies untracked)
+.gitlab-ci.yml
+
+# Runtime configuration (contains credentials)
+*.conf
+
+# Logs
+/var/log/vsphere-2-harvester/
+*.log
+
+# Editor
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

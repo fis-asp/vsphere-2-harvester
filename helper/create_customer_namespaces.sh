@@ -1,8 +1,8 @@
 #!/bin/bash
 #
 # Script: create-customer_namespaces.sh
+# Author: Felix Förster @ FIS-ASP
 # Description: Creates one or more customer namespaces for vm deployment.
-# Author: FOERSTERF with the help of Gemini
 
 # === Defaults ===
 DRY_RUN=false

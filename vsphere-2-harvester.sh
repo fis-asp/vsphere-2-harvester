@@ -22,24 +22,25 @@ SCRIPT_NAME="VSPHERE-2-HARVESTER"
 TMUX_SESSION_PREFIX="v2h"
 VERBOSE=0
 
+# Resolve script directory for relative imports
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Import helper functions
-if [[ -f /root/vsphere-2-harvester/main/import_monitor.sh ]]; then
-  source /root/vsphere-2-harvester/main/import_monitor.sh
+if [[ -f "${SCRIPT_DIR}/import_monitor.sh" ]]; then
+  source "${SCRIPT_DIR}/import_monitor.sh"
 else
   echo "[${SCRIPT_NAME}] $(date '+%Y-%m-%d %H:%M:%S') [ERROR]: Missing required file: import_monitor.sh" >&2
   exit 1
 fi
 
 # --- Default migration parameters ---
-DEFAULT_VSPHERE_DC="ASP"
-DEFAULT_SRC_NET="RHV-Testing"
-DEFAULT_DST_NET="default/rhv-testing"
-DEFAULT_NAMESPACE="har-fasp-02"
-DEFAULT_KUBECONFIG="config_asp-vic02"
+DEFAULT_VSPHERE_DC=""
+DEFAULT_SRC_NET=""
+DEFAULT_DST_NET=""
+DEFAULT_NAMESPACE="default"
 POST_MIGRATE_SOCKETS="2"
 
 HARVESTER_NAMESPACE="${HARVESTER_NAMESPACE:-$DEFAULT_NAMESPACE}"
-KUBECONFIG_NAME="${KUBECONFIG_NAME:-$DEFAULT_KUBECONFIG}"
 
 # --- Helper: Show usage/help ---
 show_help() {
@@ -58,7 +59,7 @@ Options:
 Config file: $CONFIG_FILE
 Logs:        $GENERAL_LOG_FILE
 
-Author: Paul Dresch @ FIS-ASP
+Author: Paul Dresch
 EOF
 }
 
@@ -392,7 +393,7 @@ run_in_tmux_session() {
   tmux new-session -d -s "$session_name" -x 200 -y 50 -c "$(pwd)" \
     bash --noprofile --norc -i -c "
       source /etc/bashrc 2>/dev/null || true
-      export KUBECONFIG=\"\${HOME}/.kube/configs/${KUBECONFIG_NAME}\"
+      export KUBECONFIG="\${KUBECONFIG:-\${HOME}/.kube/config}"
       source <(kubectl completion bash) 2>/dev/null || true
       exec '$0' --verbose --skip-config-menu
     "

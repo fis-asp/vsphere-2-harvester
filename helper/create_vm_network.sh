@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
 # Script: create-vm-network.sh
+# Author: Felix Förster @ FIS-ASP
 # Description: Creates or updates a NetworkAttachmentDefinition (NAD) for Multus/Harvester.
-# Author: FOERSTERF with the help of Gemini
 
 # Stop execution on error, unset variables, or pipe failures
 set -euo pipefail

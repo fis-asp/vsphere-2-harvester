@@ -63,7 +63,7 @@ Before running the migration tool, ensure the following:
 Clone the repository:
 
 ```bash
-git clone https://code.fis-gmbh.de/fis-asp/intern/technical-services/team-8/hypervisor/suse-virtualization/vsphere-2-harvester.git
+git clone https://github.com/fis-asp/vsphere-2-harvester.git
 cd vsphere-2-harvester
 ```
 
@@ -90,7 +90,7 @@ The script will prompt for required values. Defaults and current values are disp
 Prompts include:
 - **Harvester API URL** (e.g., `https://harvester.example.com`)
 - **Harvester API Access Key / Secret Key**
-- **Harvester Namespace** (default: `har-fasp-02`)
+- **Harvester Namespace** (default: `default`)
 - **vSphere Username / Password**
 - **vSphere Endpoint** (e.g., `https://vcenter.example.com/sdk`)
 - **vSphere Datacenter**
@@ -112,12 +112,12 @@ All values are saved to `~/.vsphere2harvester.conf` for reuse.
   3) Harvester Secret Key:   ********
   4) vSphere User:           administrator@vsphere.local
   5) vSphere Endpoint:       https://vcenter.example.com/sdk
-  6) vSphere Datacenter:     ASP
-  7) Source Network:         RHV-Testing
-  8) Destination Network:    default/rhv-testing
+  6) vSphere Datacenter:     MyDatacenter
+  7) Source Network:         VM Network
+  8) Destination Network:    default/vm-network
   9) VM Name:                my-vm
  10) VM Folder:              /Datacenter/vm/Folder
- 11) Namespace:              har-fasp-02
+ 11) Namespace:              default
 =============================================================
 Enter=Continue, q=Quit
 ```
