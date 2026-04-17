@@ -1,167 +1,91 @@
-# vSphere to Harvester Migration Tool
+# vsphere-2-harvester
 
-## Overview
+A shell-based tool for migrating VMware vSphere VMs into [Harvester](https://harvesterhci.io/) using the `vm-import-controller` and the Harvester API.
 
-The **`vsphere-2-harvester.sh`** script provides an **enterprise‑ready, auditable, and user‑friendly** way to migrate VMware vSphere virtual machines (VMs) into **Harvester** using the `vm-import-controller` and Harvester API.  
+We built this because migrating VMs one-by-one through the Harvester UI is tedious and error-prone, especially at scale. This script wraps the full workflow — credential setup, source registration, import, disk reconfiguration, and startup — into a single interactive run. It uses [gum](https://github.com/charmbracelet/gum) for the TUI and optionally runs inside tmux so you can detach and come back later.
 
-It is designed for **production environments**, with robust logging, error handling, and configuration persistence.
+## What it does
 
----
+1. Creates a Kubernetes Secret with your vSphere credentials
+2. Registers a `VmwareSource` pointing at your vCenter
+3. Creates a `VirtualMachineImport` for the target VM
+4. Streams `vm-import-controller` logs in real time and waits for completion
+5. Patches the imported VM's disk bus to virtio and adjusts CPU topology
+6. Starts the VM via the Harvester API and verifies it reaches `Running`
+7. Cleans up the import resource
 
-## Key Features
-
-- **Automated Migration Workflow**
-  - Migrates VMware vSphere VMs into Harvester with minimal manual steps.
-  - Handles VM network mapping, datacenter selection, and optional folder configuration.
-  - Supports **namespace‑aware deployments**: all Kubernetes resources (Secrets, `VmwareSource`, `VirtualMachineImport`) are created in the namespace of your choice.
-
-- **Logging & Auditing**
-  - Centralized general log: `/var/log/vsphere-2-harvester/general.log`
-  - Dedicated per‑VM migration logs: `/var/log/vsphere-2-harvester/<VM_NAME>.log`
-  - Automatic log rotation via `logrotate` (daily rotation, 14 retained, compressed).
-
-- **Resilient Error Handling**
-  - Automatic retries for transient errors.
-  - Monitors `vm-import-controller` logs in real time, with auto‑reconnect on stream errors.
-  - Detects stalled imports and provides detailed diagnostics.
-
-- **User‑Friendly & Secure**
-  - Interactive prompts with defaults and examples.
-  - Sensitive values (e.g., API keys, passwords) are masked in prompts and logs.
-  - Configuration is persisted in `~/.vsphere2harvester.conf` for repeatable runs.
-
-- **Post‑Import Enhancements**
-  - Automatically switches VM disks to **SATA bus** for compatibility.
-  - Performs a **soft reboot** of the VM via the Harvester API to ensure it boots cleanly.
-
----
+Configuration is saved to `~/.vsphere2harvester.conf` so you don't have to re-enter everything each run. Logs go to `/var/log/vsphere-2-harvester/` with automatic rotation.
 
 ## Prerequisites
 
-Before running the migration tool, ensure the following:
-
-1. **Harvester Cluster**
-   - Harvester **v1.1.0 or later** installed and configured.
-   - `vm-import-controller` addon enabled in the Harvester UI.
-
-2. **Kubernetes CLI (`kubectl`)**
-   - Installed and configured to interact with your Harvester cluster.
-   - Context must point to the target Harvester cluster.
-
-3. **vSphere Access**
-   - Valid vSphere credentials with permissions to read VM definitions.
-   - Ensure VM names are **RFC1123 compliant** (lowercase, no special characters, max 63 chars).
-
-4. **Linux Host**
-   - Bash 4.x or later.
-   - `curl`, `kubectl`, and `logrotate` available.
-
----
+- Harvester v1.1.0+ with the `vm-import-controller` addon enabled
+- `kubectl` configured to talk to your Harvester cluster
+- [gum](https://github.com/charmbracelet/gum) installed
+- vSphere credentials with read access to the VMs you want to migrate
+- VM names must be RFC 1123 compliant (lowercase, alphanumeric + hyphens, max 63 chars)
+- Linux with Bash 4+, `curl`, `logrotate`
 
 ## Installation
-
-Clone the repository:
 
 ```bash
 git clone https://github.com/fis-asp/vsphere-2-harvester.git
 cd vsphere-2-harvester
-```
-
-Make the script executable:
-
-```bash
 chmod +x vsphere-2-harvester.sh
 ```
 
----
-
 ## Usage
-
-Run the migration tool:
 
 ```bash
 ./vsphere-2-harvester.sh
 ```
 
-### Interactive Configuration
+The script walks you through a config menu where you set:
 
-The script will prompt for required values. Defaults and current values are displayed, and sensitive inputs (e.g., API keys, passwords) are masked.
+- Harvester API URL, access key, and secret key
+- vSphere username, password, endpoint, and datacenter
+- Source network (vSphere side) and destination network (Harvester side)
+- VM name, optional VM folder, target namespace, CPU socket count
 
-Prompts include:
-- **Harvester API URL** (e.g., `https://harvester.example.com`)
-- **Harvester API Access Key / Secret Key**
-- **Harvester Namespace** (default: `default`)
-- **vSphere Username / Password**
-- **vSphere Endpoint** (e.g., `https://vcenter.example.com/sdk`)
-- **vSphere Datacenter**
-- **Source Network** (vSphere)
-- **Destination Network** (Harvester)
-- **VM Name**
-- **VM Folder** (optional)
+Hit `[Continue]` when you're happy with the values. If tmux is available and you're not already in a session, it'll spawn one automatically so the migration survives a disconnected terminal.
 
-All values are saved to `~/.vsphere2harvester.conf` for reuse.
+Use `--verbose` / `-v` for debug-level logging.
 
----
+### Example config screen
 
-## Example Run
-
-```text
-========== Default/Current Migration Configuration ==========
-  1) Harvester API URL:      https://harvester.example.com
-  2) Harvester Access Key:   ********
-  3) Harvester Secret Key:   ********
-  4) vSphere User:           administrator@vsphere.local
-  5) vSphere Endpoint:       https://vcenter.example.com/sdk
-  6) vSphere Datacenter:     MyDatacenter
-  7) Source Network:         VM Network
-  8) Destination Network:    default/vm-network
-  9) VM Name:                my-vm
- 10) VM Folder:              /Datacenter/vm/Folder
- 11) Namespace:              default
-=============================================================
-Enter=Continue, q=Quit
+```
+ 1) Harvester API URL:      https://harvester.example.com
+ 2) Harvester Access Key:   [set]
+ 3) Harvester Secret Key:   [set]
+ 4) vSphere User:           administrator@vsphere.local
+ 5) vSphere Endpoint:       https://vcenter.example.com/sdk
+ 6) vSphere Datacenter:     MyDatacenter
+ 7) Source Network:         VM Network
+ 8) Destination Network:    default/vm-network
+ 9) VM Name:                my-vm
+10) VM Folder:              /Datacenter/vm/Folder
+11) Namespace:              default
+12) CPU Sockets:            2
 ```
 
----
+## Helper scripts
 
-## Logs & Auditing
+`helper/` contains two standalone utilities:
 
-- **General Logs**  
-  `/var/log/vsphere-2-harvester/general.log`
+- **create_customer_namespaces.sh** — Bulk-create namespaces from a comma-separated list. Supports `--dry-run`.
+- **create_vm_network.sh** — Create or update a Harvester `NetworkAttachmentDefinition` (Multus NAD) with VLAN, CIDR, and gateway config. Supports `-d` (dry-run) and `-f` (force update).
 
-- **Per‑VM Logs**  
-  `/var/log/vsphere-2-harvester/<VM_NAME>.log`
+## Logs
 
-- **Log Rotation**  
-  Configured automatically via `/etc/logrotate.d/vsphere-2-harvester`:
-  - Daily rotation
-  - 14 retained logs
-  - Compressed archives
-  - Max age: 30 days
+- General log: `/var/log/vsphere-2-harvester/general.log`
+- Per-VM log: `/var/log/vsphere-2-harvester/<VM_NAME>.log`
+- Rotation is set up automatically (daily, 14 kept, compressed, max 30 days)
 
----
+## Good to know
 
-## Error Handling & Recovery
+- **Import monitoring** tails the controller pod logs and auto-reconnects on stream errors. If an import stalls in `sourceReady`/`diskImageSubmitted`/`virtualMachineCreated`, it extends the timeout and retries. If it fails outright, the full `VirtualMachineImport` YAML is dumped for debugging.
+- **Windows VMs**: set the disk controller to SATA in vCenter *before* migration and install VirtIO drivers after.
+- **Network mapping**: make sure both the source and destination networks actually exist before starting.
 
-- **Import Monitoring**  
-  The script tails the `vm-import-controller` logs in `harvester-system` and automatically reconnects if the stream is interrupted.
+## License
 
-- **Timeouts**  
-  Import is monitored for up to **10 minutes** with retries every 5 seconds.
-
-- **Diagnostics**  
-  If an import fails, the script automatically dumps the full `VirtualMachineImport` resource YAML for troubleshooting.
-
----
-
-## Known Considerations
-
-1. **VM Name Compliance**  
-   Ensure VM names are RFC1123 compliant.
-
-2. **Network Mapping**  
-   Validate that source and destination networks exist and are correctly mapped.
-
-3. **Windows VMs**  
-   - Set disk controller to **SATA** in vCenter before migration.  
-   - Install **VirtIO drivers** post‑import for optimal performance.
+[MIT](LICENSE)
