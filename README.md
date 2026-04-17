@@ -2,7 +2,7 @@
 
 A shell-based tool for migrating VMware vSphere VMs into [Harvester](https://harvesterhci.io/) using the `vm-import-controller` and the Harvester API.
 
-We built this because migrating VMs one-by-one through the Harvester UI is tedious and error-prone, especially at scale. This script wraps the full workflow — credential setup, source registration, import, disk reconfiguration, and startup — into a single interactive run. It uses [gum](https://github.com/charmbracelet/gum) for the TUI and optionally runs inside tmux so you can detach and come back later.
+We built this because migrating VMs one-by-one through the Harvester UI is tedious and error-prone, especially at scale. This script wraps the full workflow (credential setup, source registration, import, disk reconfiguration, and startup) into a single interactive run. It uses [gum](https://github.com/charmbracelet/gum) for the TUI and optionally runs inside tmux so you can detach and come back later.
 
 ## What it does
 
@@ -71,8 +71,8 @@ Use `--verbose` / `-v` for debug-level logging.
 
 `helper/` contains two standalone utilities:
 
-- **create_customer_namespaces.sh** — Bulk-create namespaces from a comma-separated list. Supports `--dry-run`.
-- **create_vm_network.sh** — Create or update a Harvester `NetworkAttachmentDefinition` (Multus NAD) with VLAN, CIDR, and gateway config. Supports `-d` (dry-run) and `-f` (force update).
+- **create_customer_namespaces.sh** - Bulk-create namespaces from a comma-separated list. Supports `--dry-run`.
+- **create_vm_network.sh** - Create or update a Harvester `NetworkAttachmentDefinition` (Multus NAD) with VLAN, CIDR, and gateway config. Supports `-d` (dry-run) and `-f` (force update).
 
 ## Logs
 

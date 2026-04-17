@@ -266,7 +266,7 @@ prompt_for_var() {
       # IMPORTANT: No normalization; validate exactly what the user entered/chosen.
       if ! is_rfc1123 "$candidate"; then
         gum style --foreground 196 "Invalid Kubernetes name: '$candidate'"
-        gum style --foreground 244 "Must comply with RFC 1123 label: lowercase alphanumeric or '-', 1–63 characters, starting and ending with an alphanumeric."
+        gum style --foreground 244 "Must comply with RFC 1123 label: lowercase alphanumeric or '-', 1-63 characters, starting and ending with an alphanumeric."
         gum style --foreground 214 "Please rename the VMware VM to a compliant name (-> no fqdn -> e.g. bransible, vm01, ...) before proceeding."
         # Re-prompt
         continue
