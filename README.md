@@ -2,7 +2,7 @@
 
 A shell-based tool for migrating VMware vSphere VMs into [Harvester](https://harvesterhci.io/) using the `vm-import-controller` and the Harvester API.
 
-We built this because migrating VMs one-by-one through the Harvester UI is tedious and error-prone, especially at scale. This script wraps the full workflow (credential setup, source registration, import, disk reconfiguration, and startup) into a single interactive run. It uses [gum](https://github.com/charmbracelet/gum) for the TUI and optionally runs inside tmux so you can detach and come back later.
+We built this because migrating VMs one-by-one through the standalone [Harvester-Import-Controller](https://docs.harvesterhci.io/v1.7/advanced/addons/vmimport/) is tedious and error-prone, especially at scale. This script wraps the full workflow (credential setup, source registration, import, disk reconfiguration, and startup) into a single interactive run. It uses [gum](https://github.com/charmbracelet/gum) for the TUI and optionally runs inside tmux so you can detach and come back later.
 
 ## What it does
 
